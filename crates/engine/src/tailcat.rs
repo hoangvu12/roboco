@@ -8,8 +8,9 @@
 //! bytes — pairing, session credentials, and revocation stay Roboco's (ADR 0006),
 //! and the address itself is a transport handle, never authorization.
 //!
-//! Managed contract mirrored from the adapter: stdout carries exactly one
-//! readiness JSON line, diagnostics go to stderr, the parent holds the write end
+//! Managed contract mirrored from the adapter: stdout carries one readiness
+//! JSON line (then, for `connect` with `ROBOCO_TAILCAT_STATUS=1`, one path
+//! status line per measurement — fleet-redesign 16), diagnostics go to stderr, the parent holds the write end
 //! of the child's stdin so EOF ends the child even when a crash bypasses
 //! destructors, `connect` config files are regular mode-0600 files that never
 //! carry the secret in argv, and state files are role-tagged.
@@ -23,8 +24,8 @@
 
 use anyhow::{Context, Result};
 pub use roboco_proto::tailcat::{
-    INVITE_PREFIX, InviteError, MAX_ADDRESS_BYTES, TailcatInvite, describe, validate_pair_code,
-    validate_tailcat_address,
+    INVITE_PREFIX, InviteError, LinkPath, MAX_ADDRESS_BYTES, TailcatInvite, describe,
+    validate_pair_code, validate_tailcat_address,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -299,8 +300,17 @@ fn current_publication(held: &str, recorded_in: Option<&Path>) -> String {
 /// A running `connect` adapter: exposes one Tailcat peer at a local loopback URL.
 pub struct TailcatClient {
     url: String,
+    /// The last path the adapter reported (fleet-redesign 16).
+    path: PathSlot,
     _child: AdapterChild,
 }
+
+/// Where a `connect` adapter's status lines land.
+type PathSlot = std::sync::Arc<std::sync::Mutex<Option<LinkPath>>>;
+
+/// Asks `connect` for path status lines after its readiness line. An
+/// environment variable, not a flag: an older adapter ignores it.
+const STATUS_ENV: &str = "ROBOCO_TAILCAT_STATUS";
 
 impl TailcatClient {
     /// Pull `address` to a fresh loopback listener and wait for readiness. The
@@ -338,7 +348,8 @@ impl TailcatClient {
         push_derp_map(&mut arguments, derp_map);
         let mut child = AdapterChild::spawn(&adapter, "connect", &arguments)?;
         child.cleanup = Some(state_dir.clone());
-        let ready: ConnectReadiness = child.read_readiness("connect")?;
+        let path = PathSlot::default();
+        let ready: ConnectReadiness = child.read_readiness_then("connect", Some(path.clone()))?;
         validate_loopback_url(&ready.url)?;
         tracing::info!(
             adapter = %adapter.display(),
@@ -348,6 +359,7 @@ impl TailcatClient {
         );
         Ok(Self {
             url: ready.url,
+            path,
             _child: child,
         })
     }
@@ -381,7 +393,8 @@ impl TailcatClient {
         ];
         push_derp_map(&mut arguments, derp_map);
         let mut child = AdapterChild::spawn(&adapter, "connect", &arguments)?;
-        let ready: ConnectReadiness = child.read_readiness("connect")?;
+        let path = PathSlot::default();
+        let ready: ConnectReadiness = child.read_readiness_then("connect", Some(path.clone()))?;
         validate_loopback_url(&ready.url)?;
         tracing::info!(
             adapter = %adapter.display(),
@@ -391,12 +404,23 @@ impl TailcatClient {
         );
         Ok(Self {
             url: ready.url,
+            path,
             _child: child,
         })
     }
 
     pub fn url(&self) -> &str {
         &self.url
+    }
+
+    /// How this client last reached its engine: directly or through a relay
+    /// region, with the round trip (`None` until the adapter has measured
+    /// it, or with an adapter too old to report it).
+    pub fn link_path(&self) -> Option<LinkPath> {
+        self.path
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 }
 
@@ -479,6 +503,9 @@ impl AdapterChild {
         // Ends the adapter even when native app termination or a crash bypasses
         // destructors; the adapter documents this variable.
         command.env("ROBOCO_TAILCAT_PARENT_PIPE", "1");
+        if role == "connect" {
+            command.env(STATUS_ENV, "1");
+        }
         // The adapter is a console program: started from the desktop (or the
         // detached CLI engine) it would otherwise open its own console window.
         #[cfg(windows)]
@@ -501,6 +528,17 @@ impl AdapterChild {
     /// Read exactly one readiness line. Failures report the line's size, never its
     /// contents: a malformed line can still carry the secret address.
     fn read_readiness<T: for<'de> Deserialize<'de>>(&mut self, role: &'static str) -> Result<T> {
+        self.read_readiness_then(role, None)
+    }
+
+    /// [`Self::read_readiness`], then keep reading: every later line that
+    /// parses as a path status lands in `status` (the rest are dropped,
+    /// unread and unlogged).
+    fn read_readiness_then<T: for<'de> Deserialize<'de>>(
+        &mut self,
+        role: &'static str,
+        status: Option<PathSlot>,
+    ) -> Result<T> {
         let stdout = self
             .child
             .stdout
@@ -508,15 +546,27 @@ impl AdapterChild {
             .context("tailcat adapter has no stdout")?;
         let (sender, receiver) = mpsc::channel::<String>();
         std::thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) => {
-                        if sender.send(line).is_err() {
-                            break;
-                        }
+            let mut lines = BufReader::new(stdout).lines();
+            match lines.next() {
+                Some(Ok(line)) => {
+                    if sender.send(line).is_err() {
+                        return;
                     }
-                    Err(_) => break,
+                }
+                _ => return,
+            }
+            drop(sender);
+            let Some(status) = status else {
+                return;
+            };
+            for line in lines {
+                let Ok(line) = line else {
+                    break;
+                };
+                if let Some(path) = LinkPath::parse(&line) {
+                    *status
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(path);
                 }
             }
         });

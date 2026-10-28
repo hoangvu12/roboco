@@ -6,10 +6,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -26,9 +30,11 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -153,6 +159,14 @@ import sh.roboco.android.design.glass.LocalHazeState
  * @param presence forwarded [AppRouter.sessionDidAppear]/[Close] events
  *   (ticket 108's carry-over across the 840 dp breakpoint); `null` by
  *   default.
+ * @param oneRowBar wave-10 37 (upstream #967 + #971): the iPhone's one-row
+ *   bottom bar instead of the tab chrome — [SessionsBottomBar] (Settings,
+ *   the search field filtering the list in place, New session) over the
+ *   Sessions stack alone, shown on its root only
+ *   ([NavStack.chromeOnRootOnly]); Settings is pushed ([SettingsRoute]) and
+ *   Search is the field, so no tab can be selected and no tab bar comes
+ *   back. The app root always passes `true`; `false` keeps the legacy tab
+ *   chrome for its component tests and galleries only.
  * @param onNewSession the accessory's tap; `null` (production) presents the
  *   New Session sheet through the phone router (the iOS tab controller's
  *   own `presentNewSession`). The gallery demos override it.
@@ -177,6 +191,7 @@ fun MainTabShell(
     hooks: RouterHooks = LocalRouterHooks.current,
     sheetHost: SheetHostState? = null,
     presence: SessionPresenceListener? = null,
+    oneRowBar: Boolean = false,
     onNewSession: (() -> Unit)? = null,
     onChrome: (ChromeVisibilityController) -> Unit = {},
     onRouter: (AppRouter) -> Unit = {},
@@ -193,7 +208,7 @@ fun MainTabShell(
     // anchor — all derived, never flipped, so a cancelled predictive back
     // re-derives from the real top screen.
     val chrome = rememberChromeVisibilityController(state, minimize)
-    val insets = rememberBottomChromeInsets()
+    val insets = rememberBottomChromeInsets(oneRowBar)
     val chromeTopState = LocalBottomChromeTop.current
     val reduceMotion = LocalReduceMotion.current
     val layoutDirection = LocalLayoutDirection.current
@@ -228,6 +243,20 @@ fun MainTabShell(
         enabled = !state.stack(state.selected).canPop && state.selected != TabId.Sessions,
     ) { state.backFromRoot() }
 
+    // Wave-10 37: the Sessions stack shows the bar on its root alone.
+    remember(state, oneRowBar) {
+        state.stack(TabId.Sessions).chromeOnRootOnly = oneRowBar
+        oneRowBar
+    }
+    // Back on the front page with a query: clear it (the list unfilters)
+    // before the activity's own back.
+    val filtering by remember(searchState, oneRowBar) {
+        derivedStateOf { oneRowBar && searchState.query.isNotEmpty() }
+    }
+    BackHandler(enabled = filtering && !state.stack(TabId.Sessions).canPop) {
+        searchState.text.clearText()
+    }
+
     // #33: the phone router (#32) built before the root modifier — the
     // hardware-shortcut modifier needs the real router, and reading
     // LocalAppRouter here would still see Noop (32 provides it inside this
@@ -239,7 +268,12 @@ fun MainTabShell(
     val ownSheetHost = rememberSheetHostState()
     val host = sheetHost ?: rootSheetHost ?: ownSheetHost
     val mountsOwnHost = host !== rootSheetHost
-    val shell = rememberPhoneShell(state, host)
+    val shell = rememberPhoneShell(
+        state,
+        host,
+        oneRowBar = oneRowBar,
+        search = if (oneRowBar) searchState else null,
+    )
     val router = rememberPhoneAppRouter(shell, hooks, presence)
 
     BoxWithConstraints(
@@ -307,6 +341,7 @@ fun MainTabShell(
                 LocalSearchTabState provides searchState,
                 LocalTabBarMinimize provides minimize,
                 LocalBottomChrome provides insets,
+                LocalBottomBarSearch provides if (oneRowBar) searchState else null,
             ) {
                 // The scrolling tab content: the only haze source the chrome
                 // samples, wrapped in the minimize detector (#28).
@@ -329,9 +364,11 @@ fun MainTabShell(
                                             // Read per event, never captured: a
                                             // pushed Session's transcript must
                                             // not drive the bar, and Search has
-                                            // no pill to minimize (29).
-                                            state.selected != TabId.Search &&
-                                                !state.stack(state.selected).top.route.hidesBottomChrome
+                                            // no pill to minimize (29). The
+                                            // one-row bar never minimizes.
+                                            !oneRowBar &&
+                                                state.selected != TabId.Search &&
+                                                state.stack(state.selected).let { !it.hidesChrome(it.top) }
                                         },
                                 ) { entry ->
                                     // #30: every entry gets its live transition
@@ -357,7 +394,8 @@ fun MainTabShell(
                     val previous = lastTop
                     lastTop = state.selected to top
                     if (previous == null) return@LaunchedEffect
-                    val hides = previous.second.route.hidesBottomChrome || top.route.hidesBottomChrome
+                    val stack = state.stack(state.selected)
+                    val hides = stack.hidesChrome(previous.second) || stack.hidesChrome(top)
                     minimize.expand(animate = !hides)
                 }
 
@@ -382,7 +420,39 @@ fun MainTabShell(
                 // #30: the whole group is placed / covered / dimmed by
                 // [Modifier.chromeVisibility] — never removed from composition.
                 CompositionLocalProvider(LocalHazeState provides barHaze) {
-                    TabChromeLayout(
+                    if (oneRowBar) {
+                        // Wave-10 37: the one-row bar, placed / covered /
+                        // dimmed by the same visibility controller (#30)
+                        // and riding on the IME while the field is focused.
+                        // Its top is the toasts' anchor (#967's Toast.swift).
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .onPlaced { chrome.layoutTopInRoot = it.positionInRoot().y }
+                                .chromeVisibility(chrome),
+                        ) {
+                            SessionsBottomBar(
+                                searchState = searchState,
+                                onSettings = { router.showSettings() },
+                                onNewSession = accessoryTap,
+                                onFrontPage = state.stack(TabId.Sessions).let { !it.hidesChrome(it.top) },
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .windowInsetsPadding(WindowInsets.ime.exclude(WindowInsets.navigationBars))
+                                    .padding(
+                                        start = insetStart + SessionsBottomBarMetrics.SideMargin.dp,
+                                        end = insetEnd + SessionsBottomBarMetrics.SideMargin.dp,
+                                        bottom = barBottom,
+                                    )
+                                    .onPlaced { coords ->
+                                        chrome.updateChromeTop(
+                                            with(density) { coords.positionInParent().y.toDp() }.value,
+                                            density,
+                                        )
+                                    },
+                            )
+                        }
+                    } else TabChromeLayout(
                         progress = { minimize.progress.value },
                         searchProgress = { morph.value },
                         searchActive = searchSelected,

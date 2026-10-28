@@ -118,13 +118,13 @@ class AppRootTest {
     }
 
     @Test
-    fun exactly840DpSplitsAnd839DpIsThePhone() {
+    fun exactly744DpSplitsAnd743DpIsThePhone() {
         input.value = RootInput.Ready(hasEngines = true)
-        width.value = 840.dp
+        width.value = 744.dp
         start()
         compose.onNodeWithTag("root-split").assertExists()
 
-        compose.runOnUiThread { width.value = 839.dp }
+        compose.runOnUiThread { width.value = 743.dp }
         compose.waitForIdle()
         compose.onNodeWithTag("root-phone").assertExists()
         compose.onNodeWithTag("root-split").assertDoesNotExist()

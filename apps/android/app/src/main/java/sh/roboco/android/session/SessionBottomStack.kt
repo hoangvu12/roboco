@@ -206,6 +206,8 @@ fun SessionBottomStack(
     // measure block below (an IME frame re-measures, never recomposes).
     val imeInsets = WindowInsets.ime
     val navInsets = WindowInsets.navigationBars
+    // Wave-10 42 (#1014): beside the tablet sidebar, its toolbar's middle.
+    val toolbarMid = LocalSidebarToolbarMid.current
     val safeInsets = WindowInsets.safeDrawing
 
     SubcomposeLayout(modifier.testTag(BottomStackTags.Stack)) { constraints ->
@@ -230,10 +232,18 @@ fun SessionBottomStack(
             maxW = BottomStackMetrics.MaxWidth.toPx(),
         )
         val stackX = BottomStackMetrics.stackX(windowWidth, safeL, safeR, stackWidthPx)
-        val stackBottomPx = BottomStackMetrics.stackBottom(
-            windowHeight, imePx, navPx,
-            gap = BottomStackMetrics.KeyboardGap.toPx(),
-        )
+        val stackBottomPx = if (toolbarMid != null) {
+            BottomStackMetrics.stackBottomBesideToolbar(
+                windowHeight, imePx, toolbarMid.toPx(),
+                restHeight = BottomStackMetrics.ComposerRestHeight.toPx(),
+                gap = BottomStackMetrics.KeyboardGap.toPx(),
+            )
+        } else {
+            BottomStackMetrics.stackBottom(
+                windowHeight, imePx, navPx,
+                gap = BottomStackMetrics.KeyboardGap.toPx(),
+            )
+        }
         val wPx = stackWidthPx.roundToInt()
         val xPx = stackX.roundToInt()
 
@@ -801,3 +811,12 @@ private fun BottomStackLightPreview() {
 private fun BottomStackDarkPreview() {
     RobocoTheme(Appearance.Dark) { BottomStackStandIn() }
 }
+
+/**
+ * Wave-10 42 (upstream #1014): how far above the window bottom the tablet
+ * sidebar toolbar's middle sits while the sidebar shows beside this
+ * session (the split's detail pane provides it); `null` everywhere else —
+ * the phone, a sheet, a hidden sidebar — where the composer keeps its
+ * 8 dp rest above the nav inset.
+ */
+val LocalSidebarToolbarMid = androidx.compose.runtime.staticCompositionLocalOf<Dp?> { null }

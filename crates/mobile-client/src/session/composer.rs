@@ -33,6 +33,9 @@ pub struct HostCapabilities {
     pub queued_attachments: bool,
     /// The chat's harness steers mid-turn (unknown until a live catalog).
     pub mid_turn_steering: Option<bool>,
+    /// The host switches a chat's provider between turns
+    /// (`provider-switch-v1`, wave-10 39).
+    pub provider_switch: bool,
 }
 
 impl HostCapabilities {
@@ -49,6 +52,7 @@ impl HostCapabilities {
             ),
             queue_edit_lease: has(roboco_proto::capabilities::MESSAGE_QUEUE_EDIT_LEASE_V1),
             mid_turn_steering,
+            provider_switch: has(roboco_proto::capabilities::PROVIDER_SWITCH_V1),
         }
     }
 }
@@ -550,6 +554,20 @@ mod tests {
         assert!(caps.queued_attachments);
         assert!(!caps.queue_actions);
         assert!(caps.mid_turn_steering == Some(true));
+        assert!(!caps.provider_switch, "an engine without provider-switch-v1 can't switch");
+
+        // Wave-10 39: provider switching is the engine's own capability.
+        let switching = HostCapabilities::of(
+            &[roboco_proto::capabilities::PROVIDER_SWITCH_V1.to_owned()],
+            None,
+        );
+        assert!(switching.provider_switch);
+        assert!(
+            roboco_proto::capabilities::current()
+                .iter()
+                .any(|c| c == roboco_proto::capabilities::PROVIDER_SWITCH_V1),
+            "this engine advertises it"
+        );
     }
 
     #[test]

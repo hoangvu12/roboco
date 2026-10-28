@@ -51,6 +51,13 @@ interface RowActions {
     /** Unarchive a chat — no toast of its own (iOS has none). */
     fun unarchive(chatId: String, onResult: (ActionOutcome) -> Unit = {})
 
+    /**
+     * Delete a chat for good (`AppModel.delete`, upstream #967) — the
+     * caller has already confirmed ("Delete session?"); no toast and no
+     * Undo of its own.
+     */
+    fun delete(chatId: String, onResult: (ActionOutcome) -> Unit = {})
+
     /** Move a chat into a section; `null` = "No Section" (back to Recent). */
     fun move(chatId: String, toSection: String?, onResult: (ActionOutcome) -> Unit = {})
 
@@ -61,6 +68,30 @@ interface RowActions {
         before: String?,
         onResult: (ActionOutcome) -> Unit = {},
     )
+
+    /**
+     * Pin between neighbours (`null` at either end) — a drop into Pinned
+     * (wave-10 41, the core's `pinSessionAt`). The default reports
+     * [ActionOutcome.Skipped] (previews and fakes).
+     */
+    fun pinAt(chatId: String, after: String?, before: String?, onResult: (ActionOutcome) -> Unit = {}) {
+        onResult(ActionOutcome.Skipped)
+    }
+
+    /**
+     * Move a chat into a section between its members (`null` anchors at
+     * either end; `sectionId == null` = back to Recent) — a drop there
+     * (wave-10 41, the core's `placeSession`). Default: [ActionOutcome.Skipped].
+     */
+    fun place(
+        chatId: String,
+        sectionId: String?,
+        after: String?,
+        before: String?,
+        onResult: (ActionOutcome) -> Unit = {},
+    ) {
+        onResult(ActionOutcome.Skipped)
+    }
 
     /** Rename a chat; a blank trimmed title is skipped. */
     fun rename(chatId: String, title: String, onResult: (ActionOutcome) -> Unit = {})
@@ -111,6 +142,7 @@ interface RowActions {
             override fun setPinned(chatId: String, pinned: Boolean, onResult: (ActionOutcome) -> Unit) {}
             override fun archive(chatId: String, onResult: (ActionOutcome) -> Unit) {}
             override fun unarchive(chatId: String, onResult: (ActionOutcome) -> Unit) {}
+            override fun delete(chatId: String, onResult: (ActionOutcome) -> Unit) {}
             override fun move(chatId: String, toSection: String?, onResult: (ActionOutcome) -> Unit) {}
             override fun movePin(chatId: String, after: String?, before: String?, onResult: (ActionOutcome) -> Unit) {}
             override fun rename(chatId: String, title: String, onResult: (ActionOutcome) -> Unit) {}

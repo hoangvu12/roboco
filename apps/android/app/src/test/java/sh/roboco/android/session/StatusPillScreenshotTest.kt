@@ -139,7 +139,7 @@ class StatusPillScreenshotTest {
         assertEquals("glyph box height", 12f, glyph.height.value, 0.5f)
         assertEquals("glyph vertically centred", pill.top.value + 9f, glyph.top.value, 0.5f)
 
-        val label = compose.onNodeWithText("Sending…", useUnmergedTree = true).getBoundsInRoot()
+        val label = compose.onNodeWithText("Sending to host…", useUnmergedTree = true).getBoundsInRoot()
         assertEquals("label 8 dp after the glyph", glyph.right.value + 8f, label.left.value, 0.5f)
         assertEquals("label 12 dp before the end", pill.right.value - 12f, label.right.value, 0.5f)
     }
@@ -185,7 +185,7 @@ class StatusPillScreenshotTest {
         try {
             host { StatusPillRow(SessionChrome.Banner.Sending, onTap = {}, nowMs = fixedNow) }
             assertEquals(30f, compose.onNodeWithTag("status-pill").getBoundsInRoot().height.value, 0.5f)
-            val label = compose.onNodeWithText("Sending…", useUnmergedTree = true).getBoundsInRoot()
+            val label = compose.onNodeWithText("Sending to host…", useUnmergedTree = true).getBoundsInRoot()
             assertTrue("the label box ignores font scale: ${label.height.value}", label.height.value in 15.5f..18.5f)
         } finally {
             RuntimeEnvironment.setFontScale(1f)
@@ -230,11 +230,11 @@ class StatusPillScreenshotTest {
         var banner by mutableStateOf<SessionChrome.Banner>(SessionChrome.Banner.Sending)
         var taps = 0
         host { StatusPillRow(banner, onTap = { taps++ }, nowMs = fixedNow) }
-        compose.onNodeWithText("Sending…", useUnmergedTree = true).assertExists()
+        compose.onNodeWithText("Sending to host…", useUnmergedTree = true).assertExists()
 
         banner = SessionChrome.Banner.None
         applyState()
-        compose.onNodeWithText("Sending…", useUnmergedTree = true).assertExists()
+        compose.onNodeWithText("Sending to host…", useUnmergedTree = true).assertExists()
         compose.onNodeWithTag("status-pill").performTouchInput { click(center) }
         compose.waitForIdle()
         assertEquals("a .none pill swallows the tap", 0, taps)
@@ -246,12 +246,12 @@ class StatusPillScreenshotTest {
     fun sendingToNotDeliveredSwapsInTheSameFrame() {
         var banner by mutableStateOf<SessionChrome.Banner>(SessionChrome.Banner.Sending)
         host { StatusPillRow(banner, onTap = {}, nowMs = fixedNow) }
-        compose.onNodeWithText("Sending…", useUnmergedTree = true).assertExists()
+        compose.onNodeWithText("Sending to host…", useUnmergedTree = true).assertExists()
 
         banner = SessionChrome.Banner.NotDelivered
         applyState()
         compose.onNodeWithText("Not delivered · Tap to retry", useUnmergedTree = true).assertExists()
-        compose.onAllNodesWithText("Sending…", useUnmergedTree = true).assertCountEquals(0)
+        compose.onAllNodesWithText("Sending to host…", useUnmergedTree = true).assertCountEquals(0)
     }
 
     // ------------------------------------------------------------- the ticker

@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 
-pub use roboco_proto::tailcat::{INVITE_PREFIX, TailcatInvite, describe};
+pub use roboco_proto::tailcat::{INVITE_PREFIX, LinkPath, TailcatInvite, describe};
 
 /// The C ABI version this core speaks (`roboco_tailcat_abi_version`).
 pub const ABI_VERSION: i32 = 1;
@@ -70,6 +70,11 @@ pub enum TailcatError {
 pub struct Tunnel {
     url: String,
     closer: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// How the tunnel last reached the engine (fleet-redesign 16), when
+    /// the library can say.
+    path: Option<Box<dyn Fn() -> Option<LinkPath> + Send + Sync>>,
+    /// Pauses (or re-arms) the library's path pings (ADR 0010).
+    background: Option<Box<dyn Fn(bool) + Send + Sync>>,
 }
 
 impl Tunnel {
@@ -78,6 +83,33 @@ impl Tunnel {
         Self {
             url,
             closer: Mutex::new(Some(closer)),
+            path: None,
+            background: None,
+        }
+    }
+
+    /// The tunnel's path report and background switch.
+    pub fn with_controls(
+        mut self,
+        path: Box<dyn Fn() -> Option<LinkPath> + Send + Sync>,
+        background: Box<dyn Fn(bool) + Send + Sync>,
+    ) -> Self {
+        self.path = Some(path);
+        self.background = Some(background);
+        self
+    }
+
+    /// Direct or relayed, with the round trip; `None` until measured, or
+    /// from a library too old to say.
+    pub fn path(&self) -> Option<LinkPath> {
+        self.path.as_ref().and_then(|path| path())
+    }
+
+    /// Pause the library's path pings in the background; re-arm them on
+    /// the way back.
+    pub fn set_background(&self, background: bool) {
+        if let Some(set) = &self.background {
+            set(background);
         }
     }
 
@@ -168,6 +200,8 @@ type StartClient = unsafe extern "C" fn(
 type CloseClient = unsafe extern "C" fn(i64);
 type FreeString = unsafe extern "C" fn(*mut c_char);
 type AbiVersion = unsafe extern "C" fn() -> i32;
+type PathOf = unsafe extern "C" fn(i64, *mut *mut c_char) -> i32;
+type SetBackground = unsafe extern "C" fn(i64, i32);
 
 /// The loaded library. Never unloaded: a Go runtime cannot be torn down,
 /// so every successful load stays in [`LOADED`] for the process lifetime.
@@ -176,6 +210,10 @@ struct TailcatLib {
     start: StartClient,
     close: CloseClient,
     free: FreeString,
+    /// Added after ABI 1 without a bump (additive): absent from an older
+    /// library, which then reports no path.
+    path: Option<PathOf>,
+    set_background: Option<SetBackground>,
 }
 
 /// Successful loads by path. Failures are not cached: retrying a missing
@@ -225,11 +263,21 @@ impl TailcatLib {
             let free: FreeString = *library
                 .get::<FreeString>(b"roboco_tailcat_free\0")
                 .map_err(|_| missing_symbol("roboco_tailcat_free"))?;
+            let path = library
+                .get::<PathOf>(b"roboco_tailcat_path\0")
+                .ok()
+                .map(|symbol| *symbol);
+            let set_background = library
+                .get::<SetBackground>(b"roboco_tailcat_set_background\0")
+                .ok()
+                .map(|symbol| *symbol);
             Arc::new(Self {
                 _library: library,
                 start,
                 close,
                 free,
+                path,
+                set_background,
             })
         };
         loaded.push((path, library.clone()));
@@ -282,10 +330,36 @@ impl TailcatLib {
                 unsafe { (library.close)(handle) }
             }),
         );
+        let reader = self.clone();
+        let switch = self.clone();
+        let tunnel = tunnel.with_controls(
+            Box::new(move || reader.path_of(handle)),
+            Box::new(move |background| {
+                if let Some(set) = switch.set_background {
+                    // SAFETY: a live handle (the tunnel owns it until its
+                    // closer runs); unknown handles are ignored anyway.
+                    unsafe { set(handle, i32::from(background)) }
+                }
+            }),
+        );
         Ok(OpenedTunnel {
             tunnel,
             client_state: new_state.unwrap_or_default(),
         })
+    }
+
+    /// `roboco_tailcat_path` for one handle, parsed.
+    fn path_of(&self, handle: i64) -> Option<LinkPath> {
+        let path = self.path?;
+        let mut line: *mut c_char = std::ptr::null_mut();
+        // SAFETY: the out pointer is valid; the library sets it to NULL or a
+        // malloc'd string, which take_string frees exactly once.
+        let known = unsafe { path(handle, &mut line) };
+        let line = self.take_string(line)?;
+        if known == 0 {
+            return None;
+        }
+        LinkPath::parse(&line)
     }
 
     fn take_string(&self, value: *mut c_char) -> Option<String> {

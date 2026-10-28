@@ -118,7 +118,81 @@ meaning all three specs below. The user prefers **short, plain-language** status
 After each PR merges, tell the user in 2–4 plain sentences what changed for them and what's next.
 Keep a running "PRs" list in this file.
 
-## >>> HANDOFF #2 (2026-10-28, from `00743a45` to the next orchestrator): START HERE <<<
+## Orchestrator #3 log (chat `aed16e2d`, from 2026-10-29)
+
+| chat | worktree / branch | scope | state |
+|---|---|---|---|
+| `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | #39: merge main, strip #38's TS derives, fix `engine-local-regressions` + `ui-tests`, push once, watch CI | running (my turn; notice comes to me) |
+| `bdd1bbe1` | `..\roboco-ci-windows` / `ci/windows-split` | #43 CI 03→04→05 | running; takeover message queued |
+| `a7b1639c` | `..\roboco-ci-linux-android` / `ci/linux-android-tiers` | #44 CI 06, 08, 23 (`core-tests` red at takeover) | running; takeover message queued |
+| `6798cc35` | main checkout, read-only (prototypes `C:\tmp\upstream-less-recoding\`) | research: less re-coding per upstream port (renamed mirror via filter-repo, mergiraf, hot-file split, re-baseline) measured on wave-10 02–32/44–75 → `.scratch/upstream-sync-research/report-2026-10-29-less-recoding.md` | running |
+
+- Next: review #39 when `82cbdf25` reports; review/merge #43/#44 when green; relay the research
+  recommendation to the user in one short message.
+
+## >>> HANDOFF #3 (2026-10-29, from `efcef7d0` to the next orchestrator): START HERE <<<
+
+The user asked `efcef7d0` to hand off to a new orchestrator chat. New orchestrator: **`aed16e2d`** ("Roboco Orchestrator #3"). Everything below (handoff #2, the
+`efcef7d0` log, the specs) still applies; this section is the exact state now. `main` = `07b155573`.
+
+**Merged since handoff #2** (all cleaned up: worktree, local + remote branch, basedir, chat archived):
+#35, #36 (CI 01/02/07/12/13), #37 (fleet-redesign 01), #40 (fleet-redesign 17 + 16 built), #41 (upstream
+sync ledger + `scripts/upstream/` tools), #38 (wave-10 33–43; 41 core only), #42 (completion_notices race;
+CI 24). Ticket count: 19 of 127 done, 2 mostly done (wave-10 41 gesture; fleet-redesign 16's user gate).
+
+**Open PRs, what each needs**
+1. **#39 web removal** (`feature/web-removal`, worktree `..\roboco-web-removal`, worker `82cbdf25` idle).
+   Finished 2026-10-28 05:41Z; its completion notice went to the archived `00743a45`, so **nobody has
+   reviewed it**. Read its final report with `read_chat 82cbdf25`. State: `engine-local-regressions` and
+   `ui-tests` red (the first is very likely the completion_notices race fixed by #42); it's far behind main
+   (#38 #40 #41 #42 merged since). **#38 added two proto structs with `#[derive(TS)]` (`RelayAgentLoginCallback`
+   etc. in `crates/proto/src/entities.rs`) plus wiregen/`web/` generated edits, which #39 deletes: the merge
+   must strip those derives and drop the generated files.** Also: golden PNGs still show "Previews"; ADR
+   number is 0012 (fleet-redesign takes 0013). Send `82cbdf25` a message (mode run; it's idle, so the new
+   turn's notice comes to you) to merge `origin/main`, fix the TS derives + both red jobs, push once, wait for
+   CI, report. Then review against `.scratch/web-removal/` tickets and merge. Manual ticket-11 checks are
+   the user's (checklist in the PR body).
+2. **#43 CI 03→04→05** (`ci/windows-split`, `..\roboco-ci-windows`, worker `bdd1bbe1`, running).
+3. **#44 CI 06, 08, 23** (`ci/linux-android-tiers`, `..\roboco-ci-linux-android`, worker `a7b1639c`,
+   running; one check was red at handoff).
+   Workers `bdd1bbe1`/`a7b1639c` were created by `efcef7d0`, so their notices come to `efcef7d0`, not you.
+   To take them over, queue a message to each (`send_messages`, `mode: "queue"`) asking it to repeat its
+   final report after its current turn; that queued turn's notice then comes to you. Do the same for anything
+   else still running from `efcef7d0` (`list_chats parent=efcef7d0`).
+4. Old PRs **#16** (Mimir, desktop+web) and **#12** (web: @pierre/diffs): web-era, likely obsolete after
+   #39. Ask the user before closing them.
+- A stray worktree `C:\Users\HP MEDIA\AppData\Local\Temp\scratch-startup` on `ci/scratch-startup-broken`
+  exists (probably a CI worker's scratch). Leave it unless its owner is done.
+- Locked empty folders of removed worktrees free up once their chats are archived (`roboco-fix-notices`).
+
+**Order now (user, 2026-10-29: "do all the CI speed first so we can do other stuff faster")**
+CI first: #43, #44 → then CI 09 (docs + final measurement), 10 (pin actions + Dependabot; after #39),
+14/15 (arm64), 16–21, 22. Web removal #39 merges as soon as it's green. Then fleet-redesign 02–11 (one PR,
+`feature/connect-devices`), 12–15 after wave-10 03; wave-10 lanes (fixes first: 02, 03) using the new sync
+tools. Max ~3 building workers at once (the laptop runs out of memory: "paging file too small").
+
+**Upstream sync (decided 2026-10-28, tools merged in #41):** weekly batches after wave 10; small
+CLEAN/TRIVIAL ports skip tickets (`Upstream-Commit:` trailer + ledger row); ledger + tools in the repo;
+NO upstream-first PRs. Research: `.scratch/upstream-sync-research/report-2026-10-28.md` (rebase/merge
+ruled out by evidence; renames are ~1.5% of upstream's changed lines; real conflicts concentrate in five
+UI files rewritten on both sides; options deferred to "later": a persisted renamed mirror via filter-repo so
+plain cherry-pick/rerere/mergiraf work, mergiraf trial, moving Roboco-only code out of the hot files).
+**New user ask (2026-10-29), the first job of the new orchestrator:** "see how we could rebase or merge the
+upstream tickets easily without having to recode, to save time". Build on that research; don't redo it.
+
+**Waiting on the user**
+1. CI 11 triage defaults (retries for named flakes; tablet non-blocking until 3 green nights).
+2. Fleet-redesign 16 gate: after an update, Laptop→PC and phone→PC rows show Direct / Via relay; if never
+   Direct, set `pushForDirectPath = false` in `adapters/roboco-tailcat/path.go`.
+3. Manual looks: Remote access page rail/fade vs Agents; phone checklist from #38 (add account, bottom-bar
+   search, model picker, agents on/off, tablet split, delete open session on tablet; search capsule is flat now).
+4. First weekly triage: zeron #1089 (bubble fade + rail perf) and #1088 (access modes + plan mode).
+5. Later: OK to push to the zui/gpui-component forks (wave-10 57); self-hosted DERP on SG (undecided).
+6. Optional: `~/.bashrc` starts with a UTF-8 BOM (every Bash call prints a harmless `command not found`).
+- Git: the restored `.git/config` has no `kratos` remote (AGENTS.md lists it; `../Kratos` doesn't exist
+  locally). Leave it.
+
+## >>> HANDOFF #2 (2026-10-28, from `00743a45` to the next orchestrator): superseded by #3 above <<<
 
 The user asked `00743a45` to hand off to a new orchestrator chat and to open a separate standalone
 **fleet design discussion chat**. New chats: orchestrator **`efcef7d0`** ("Roboco Orchestrator #2");
@@ -159,6 +233,10 @@ once"; spec + tickets 01–15). The old fleet specs (`fleet-merge`, `fleet-agent
 `rooms`) are deleted (readable at `42cbc82ac`); fleet-agents became fleet-redesign 12–15. Schedule:
 01 alone now (in flight); 02–11 one PR on `feature/connect-devices` after web removal merges; 12–15
 their own PR after that (blocked by wave-10 03, IPC token). Its ADR is **0013** (web removal takes 0012).
+
+**Upstream sync (user decisions 2026-10-28):** weekly batches after wave 10; small CLEAN/TRIVIAL ports
+skip tickets (trailer + ledger row); ledger + tools in the repo; NO upstream-first PRs to zeron. Wave-10
+ports use `translate.py` as the first step once the tooling PR lands.
 
 **Queue after web removal merges** (unchanged): CI 03→04→05, 06, 08, then 09; CI 10 after web
 removal; CI 22–24 (from the 11 triage); wave 10 lanes (fixes first: 02, 03; wave-10 03 is also a
@@ -210,8 +288,10 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 | chat | worktree / branch | scope | state |
 |---|---|---|---|
 | `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11 | running (07) |
-| `66cf7296` | `..\roboco-w10-android` / `wave10/android` | wave-10 33–43 | running |
+| `66cf7296` | `..\roboco-w10-android` / `wave10/android` | wave-10 33–43 | **PR #38** open (all 11 committed; 41 partial: drag gesture follow-up; 36 carries a TS derive since web removal hadn't merged); review batch applied (`b5b0ce766`); JVM/compile green. **`android-emulator` device loss** (emulator drops off adb 8–10 min in, every run incl. the first push; 60-min cancel = cleanup adb with no timeout). 13:00: diagnostics patch + parallel bisect via `bisect/pr38-NN` dispatch branches (delete them after; they're unmerged → tell the user). Earlier: review done → 1 blocker (`OneRowBarShellTest` unplaced-node assert; same in `SessionFlowTest`) + 9 should-fix + nits sent back as one batch (11:50); 36's requester = per-sign-in UUID secret, documented as deviation |
 | `8b19126f` | `..\roboco-settings-scroll` / `fix/settings-scroll` | fleet-redesign 01, own PR | **PR #37** open, reviewed OK; worktree removed (branch pushed); chat archived; mobile-core flake `busy_sends_queue_steer_and_stop_and_send` re-run |
+| `1e9159f7` | main checkout (report only, prototype in `C:\tmp`) | research: faster upstream sync → `.scratch/upstream-sync-research/report-2026-10-28.md` (+ user decisions) | done, archived |
+| `2f7a0fd7` | `..\roboco-upstream-tools` / `tools/upstream-sync` | ledger (`docs/reference/upstream-ledger.tsv`), `scripts/upstream/{translate,presence,triage}.py`, weekly-loop docs; one PR | running |
 | `3f08770e` | `..\roboco-remote-speed` / `feature/remote-speed` | fleet-redesign 17 then 16 (user-approved speed tickets, `1e9bc22a5`), one PR | running |
 
 - This machine is the user's **Laptop** (not the PC): 16's gate checks Laptop↔PC first, phone↔PC to compare.
@@ -277,6 +357,31 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 ## PRs
 
 - #35 merged `6ee2e4731`, #36 merged `d7b6887d7` (2026-10-28, orchestrator #2).
+- #38 merged `3395065c0` (wave-10 33–43; 41 core only, drag gesture follow-up; 36 carries TS derives → web
+  removal must strip them). Emulator device loss root cause: ticket 37's live-blurred search capsule froze the CI
+  emulator's software GPU → capsule on `GlassTier.Fallback` (follow-up: blur only on hardware GPU). Flow-test
+  diagnostics added (bounded cleanup adb, live logcat, mem/CPU log). Golden PNGs need a re-record (no CI runs
+  Roborazzi). Cleaned up (empty locked `..
+oboco-w10-android` folder left). 16 `bisect/pr38-*` branches deleted (user OK).
+- **CI moved up (user, 2026-10-29: "do all the CI speed first"):** started without waiting for web removal.
+  `bdd1bbe1` `..\roboco-ci-windows` / `ci/windows-split` = CI 03→04→05; `a7b1639c`
+  `..\roboco-ci-linux-android` / `ci/linux-android-tiers` = CI 06, 08, 23. Web-line conflicts: whichever lands
+  second resolves. Then 09 (docs/final measurement), 10 (after web removal), 14/15 (arm64), 16–21, 22, 24.
+- **#42 merged `1c3d80b41`**: the `completion_notices` timeouts were NOT from #40. `SessionDoc::queue_command`
+  wrote `id` before `originChatId`, so the drain worker could run a chat's first command without its origin
+  (no notice owed). Fix: write `id` last (also queue rows). CI ticket 24 = same bug (its "20 green CI runs"
+  box is checked after merge). Cleaned up. Locked empty worktree folders free up once the worker chat is archived.
+- *(superseded)* **Main regression from #40:** `engine-local-regressions` (`crates/engine/tests/completion_notices.rs:293`
+  timeouts) red since `9ce048640`. Fix worker `26b1ca3b`, `..
+oboco-fix-notices` / `fix/completion-notices`.
+- #41 merged `2edb72a7a` (upstream sync: ledger 576 rows `docs/reference/upstream-ledger.tsv`, PR table, `scripts/upstream/`
+  translate/presence/triage + 31 unit tests, weekly-loop docs; no CI covers it, tests run locally). Cleaned up;
+  an empty, locked `..
+oboco-upstream-tools` folder is left: remove it later. **Wave-10 ports now start with
+  `scripts/upstream/translate.py`; small CLEAN/TRIVIAL ports need no ticket.** First weekly triage after wave 10
+  (pending: zeron #1089 bubble fade, #1088 access modes + plan mode).
+- #40 merged `9ce048640` (fleet-redesign 17 done; 16 built, its gate = the user's Laptop↔PC / phone↔PC check,
+  checklist in ticket 16; `pushForDirectPath` in `adapters/roboco-tailcat/path.go` turns pings off). Cleaned up.
 - #37 merged `f1e6ae5fa` (fleet-redesign 01, settings page scrolls; mobile-core flake re-run green). Remote
   branch `fix/settings-scroll` kept (deleting needs the user's OK). Manual: rail/fade vs Accounts page.
 - **#35** `ci/caches-windows` (CI 01, 12, 13, 02): toolchain pinned to 1.99.1; main-only cache

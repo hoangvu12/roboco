@@ -1177,7 +1177,81 @@ async fn the_warm_set_keeps_at_most_six_detached_sessions() {
     .await;
 }
 
+/// Wave-10 43 (#626): a critical memory trim evicts every quiet, detached
+/// session but the most recently used one; the view-attached session (the
+/// open one, the tablet's shown one) always stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_critical_trim_keeps_only_the_shown_and_the_most_recent_sessions() {
+    let _guard = mock_env().lock().unwrap_or_else(|p| p.into_inner());
+    let rig = rig().await;
+    for i in 0..4 {
+        rig.core
+            .workspace
+            .create_chat(&format!("trim-{i}"), None, Some(&rig.core.device_id), None, None)
+            .unwrap();
+    }
+    let ids: Vec<String> = (0..4)
+        .map(|i| rig.client.scope(&rig.engine_id, &format!("trim-{i}")))
+        .collect();
+    wait_until(
+        || ids.iter().all(|id| rig.client.workspace().session(id).is_some()),
+        "the chats arrive",
+    )
+    .await;
+    rig.client.open_session(&ids[0]).unwrap();
+    rig.client.session(&ids[0]).unwrap().set_view_attached(true);
+    for id in &ids[1..] {
+        // Distinct recency per open, whatever the clock's resolution.
+        tokio::time::sleep(Duration::from_millis(3)).await;
+        rig.client.open_session(id).unwrap();
+    }
+    let ours = |open: Vec<String>| -> Vec<String> {
+        let mut open: Vec<String> = open.into_iter().filter(|id| ids.contains(id)).collect();
+        open.sort();
+        open
+    };
+    rig.client.trim_memory(false);
+    assert_eq!(ours(rig.client.open_session_ids()).len(), 4, "small chats fit a quarter budget");
+    rig.client.trim_memory(true);
+    let open = ours(rig.client.open_session_ids());
+    let mut expected = vec![ids[0].clone(), ids[3].clone()];
+    expected.sort();
+    assert_eq!(open, expected, "the shown session and the most recent one");
+    rig.client.shutdown();
+}
+
 // ── catalogs ───────────────────────────────────────────────────────────────
+
+/// Wave-10 40 (upstream #966's `set_harness_enabled`): the phone turns an
+/// agent on or off on the computer over the paired link. The engine's
+/// rules answer: the mock can't be turned on from Settings (refused, as
+/// `HostError`), and turning off an agent that isn't enabled is a clean
+/// no-op whose reply — the fresh catalog — is stored like a live list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn set_harness_enabled_follows_the_engines_rules() {
+    let _guard = mock_env().lock().unwrap_or_else(|p| p.into_inner());
+    let rig = rig().await;
+    match rig.client.set_harness_enabled(&rig.engine_id, "mock", true).await {
+        Err(ClientError::HostError { message }) => {
+            assert!(message.contains("cannot be enabled"), "the refusal: {message}");
+        }
+        other => panic!("the mock is never enabled from Settings: {other:?}"),
+    }
+    // The rig registers only the mock, which detection never enables:
+    // turning it off is the no-op, and the reply is the stored catalog
+    // (the debug flag re-offers the mock, as for a live list).
+    let list = rig
+        .client
+        .set_harness_enabled(&rig.engine_id, "mock", false)
+        .await
+        .expect("a no-op disable answers with the catalog");
+    assert!(list.iter().any(|h| h.id == "mock"), "the fresh catalog: {list:?}");
+    // An agent the computer doesn't know is refused, never invented.
+    assert!(matches!(
+        rig.client.set_harness_enabled(&rig.engine_id, "devin", false).await,
+        Err(ClientError::HostError { .. })
+    ));
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_live_catalog_and_its_fallbacks() {

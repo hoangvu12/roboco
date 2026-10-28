@@ -202,6 +202,8 @@ fun SplitRoot(
         }
     }
 
+    // The sidebar toolbar's bottom gap — the insets 105's placement uses.
+    val toolbarBarBottom = sh.roboco.android.shell.tablet.rememberSidebarBottomInsets().barBottom
     Layout(
         modifier = modifier
             .testTag("split-root")
@@ -226,7 +228,16 @@ fun SplitRoot(
             //    while it hides. The slot is ticket 106's — it owns the stack,
             //    this frame only places it.
             Box(detailPane) {
-                CompositionLocalProvider(LocalPrefersLargeTitles provides false) {
+                CompositionLocalProvider(
+                    LocalPrefersLargeTitles provides false,
+                    // Wave-10 42 (#1014): the resting composer sits level
+                    // with the sidebar toolbar while the sidebar shows.
+                    sh.roboco.android.session.LocalSidebarToolbarMid provides if (shell.sidebarVisible) {
+                        toolbarBarBottom + sh.roboco.android.shell.tablet.SidebarChromeMetrics.ToolbarHeight / 2
+                    } else {
+                        null
+                    },
+                ) {
                     detail(shell.detailRoot)
                 }
             }

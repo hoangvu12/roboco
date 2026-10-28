@@ -330,6 +330,7 @@ private object PreviewRowActions : RowActions {
     override fun setPinned(chatId: String, pinned: Boolean, onResult: (ActionOutcome) -> Unit) = ok(onResult)
     override fun archive(chatId: String, onResult: (ActionOutcome) -> Unit) = ok(onResult)
     override fun unarchive(chatId: String, onResult: (ActionOutcome) -> Unit) = ok(onResult)
+    override fun delete(chatId: String, onResult: (ActionOutcome) -> Unit) = ok(onResult)
     override fun move(chatId: String, toSection: String?, onResult: (ActionOutcome) -> Unit) = ok(onResult)
     override fun movePin(chatId: String, after: String?, before: String?, onResult: (ActionOutcome) -> Unit) = ok(onResult)
     override fun rename(chatId: String, title: String, onResult: (ActionOutcome) -> Unit) = ok(onResult)

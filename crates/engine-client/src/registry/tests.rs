@@ -1141,3 +1141,82 @@ async fn a_failed_save_during_reattach_keeps_the_live_forwarder() {
     drop(registry);
     rig.remote.shutdown().await;
 }
+
+/// fleet-redesign 17: a remote engine's transcript stream rides a spare
+/// connection of its own (a big download never queues the shared
+/// connection's requests), dropping the stream closes that connection, and
+/// the next stream gets a fresh spare.
+#[tokio::test]
+async fn transcript_streams_ride_their_own_spare_connection() {
+    let remote_dir = tempfile::tempdir().unwrap();
+    let client_dir = tempfile::tempdir().unwrap();
+    let remote = core(remote_dir.path());
+    let registry = EngineRegistry::open_with(RegistryOptions {
+        data_dir: client_dir.path().to_path_buf(),
+        sessions: Arc::new(FileSessionStore::new(
+            client_dir.path().join("paired-engines-v1.json"),
+        )),
+        local: None,
+        resolvers: Vec::new(),
+    })
+    .await
+    .unwrap();
+    let listener = roboco_engine::serve_engine_remote(
+        "127.0.0.1:0".parse().unwrap(),
+        remote.rpc_service(),
+        remote_dir.path(),
+    )
+    .await
+    .unwrap();
+    let code = PairingStore::open(remote_dir.path())
+        .unwrap()
+        .create_code("spare test", 300)
+        .unwrap();
+    let key = registry
+        .pair(
+            &format!("http://{}/pair#token={}", listener.address, code.credential),
+            "Test desktop",
+        )
+        .await
+        .unwrap();
+    wait_for(&registry, |snapshot| {
+        snapshot
+            .engines
+            .iter()
+            .all(|e| e.state == EngineConnectionState::Connected)
+    })
+    .await;
+    let target = registry.target(&key).unwrap();
+    let chat = ScopedId::encode(&key, "same-chat");
+    // The spare is dialed once the shared connection is up; until then a
+    // stream rides the shared connection.
+    let own_stream = || async {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let stream = target
+                    .subscribe_transcript(methods::WATCH_DOC_MESSAGES, json!({ "chatId": chat }))
+                    .await
+                    .unwrap();
+                if stream.owns_connection() {
+                    return stream;
+                }
+                drop(stream);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("a spare connection")
+    };
+    let mut first = own_stream().await;
+    assert!(first.recv().await.is_some(), "the opening frame");
+    drop(first);
+    let mut second = own_stream().await;
+    assert!(
+        second.recv().await.is_some(),
+        "a fresh spare serves the next stream"
+    );
+    drop(second);
+    registry.shutdown().await;
+    drop(listener);
+    remote.shutdown().await;
+}

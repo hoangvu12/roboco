@@ -120,7 +120,7 @@ class PageSheetMathTest {
         assertEquals(0.dp, PageSheetDefaults.RecessionTopOffset)
         assertEquals(10.dp, PageSheetDefaults.StackedPeek)
         assertEquals(704.dp, PageSheetDefaults.TabletMaxWidth)
-        assertEquals(840.dp, PageSheetDefaults.TabletBreakpoint)
+        assertEquals("the split shell's breakpoint", 744.dp, PageSheetDefaults.TabletBreakpoint)
     }
 
     @Test

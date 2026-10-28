@@ -213,6 +213,10 @@ fun rememberSearchMorphProgress(searchSelected: Boolean): State<Float> {
  *   recomposition to hand the rect down.)
  * @param active Search is the selected tab (the target)
  * @param onSearchTabTap 26's `onTabTap(TabId.Search)`, used while `!active`
+ * @param held wave-10 37: whether the field may keep its focus. The
+ *   one-row bar stays composed under a pushed page, so a push flips this
+ *   off and a focused field lets go (IME hidden) — the old Search screen's
+ *   leave. Only this field's own focus is cleared.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -223,6 +227,7 @@ fun SearchTabField(
     active: Boolean,
     onSearchTabTap: () -> Unit,
     modifier: Modifier = Modifier,
+    held: Boolean = true,
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -259,6 +264,14 @@ fun SearchTabField(
     LaunchedEffect(active) {
         if (!active && wasActive.value) focusManager.clearFocus(force = true)
         wasActive.value = active
+    }
+
+    // A push over the one-row bar: the field lets go before the page lands.
+    LaunchedEffect(held) {
+        if (!held && focused) {
+            keyboard?.hide()
+            focusManager.clearFocus(force = true)
+        }
     }
 
     // The orphan-caret guard: with the IME up and the field focused, the

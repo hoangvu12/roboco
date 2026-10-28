@@ -9,6 +9,9 @@
 //! Tailcat route lives in `roboco-mobile-client` (android-next#02).
 
 pub mod cache;
+#[cfg(any(test, feature = "test-support"))]
+pub mod delay_proxy;
+pub mod login_relay;
 pub mod preview_proxy;
 pub mod registry;
 pub mod rooms;

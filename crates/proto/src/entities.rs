@@ -1194,6 +1194,53 @@ pub struct AgentAccountWarning {
     pub message: String,
 }
 
+/// `RelayAgentLoginCallback` params (wave-10 36, upstream #966): a sign-in's
+/// browser callback, caught on the loopback of the device whose browser
+/// finished it (a phone signing a computer's agent in, or a desktop managing
+/// another fleet engine), replayed on the computer running the login. Only
+/// a live login started with this `requester_device_id`, only its
+/// registered port, only a plain path + query.
+///
+/// `Debug` redacts the requester (a per-sign-in secret) and the path's
+/// query (the OAuth code and state), per ADR 0008.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayAgentLoginCallback {
+    pub login_id: String,
+    /// The requester the login was started for (`StartAgentLogin`'s
+    /// `requesterDeviceId`). Roboco clients send a fresh random value per
+    /// sign-in, so only the client that started the login can relay it.
+    pub requester_device_id: String,
+    /// The callback's request target: `/path?query`, never a URL.
+    pub path: String,
+}
+
+impl std::fmt::Debug for RelayAgentLoginCallback {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let path = match self.path.split_once('?') {
+            Some((path, _)) => format!("{path}?<redacted>"),
+            None => self.path.clone(),
+        };
+        formatter
+            .debug_struct("RelayAgentLoginCallback")
+            .field("login_id", &self.login_id)
+            .field("requester_device_id", &"<redacted>")
+            .field("path", &path)
+            .finish()
+    }
+}
+
+/// `RelayAgentLoginCallback` reply: how the computer's listener answered
+/// the replayed callback, so the device that caught the browser answers it
+/// alike. The status only — a success redirect's `Location` can carry
+/// tokens, so it never leaves the computer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayedLoginCallback {
+    /// The HTTP status; `0` when the listener's reply had none.
+    pub status: u16,
+}
+
 /// `StartAgentLogin` reply: open `url`, then either paste the code back
 /// (`CompleteAgentLogin`) or poll until the browser flow lands (`PollAgentLogin`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1462,6 +1509,18 @@ pub struct ChatConnectivity {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn a_relayed_callbacks_debug_hides_the_requester_and_the_code() {
+        let call = RelayAgentLoginCallback {
+            login_id: "login-1".into(),
+            requester_device_id: "secret-nonce".into(),
+            path: "/auth/callback?code=oauth-code&state=s".into(),
+        };
+        let shown = format!("{call:?}");
+        assert!(shown.contains("login-1") && shown.contains("/auth/callback?<redacted>"), "{shown}");
+        assert!(!shown.contains("secret-nonce") && !shown.contains("oauth-code"), "{shown}");
+    }
 
     #[test]
     fn outside_workspace_reads_round_trip_without_breaking_older_reasons() {

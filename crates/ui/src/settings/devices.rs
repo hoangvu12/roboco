@@ -99,11 +99,29 @@ pub struct DevicesPage {
     task: Option<Task<()>>,
     copy_task: Option<Task<()>>,
     _observe: Subscription,
+    /// Re-renders when an engine's Tailcat path label changes (the adapter
+    /// re-measures at most every minute; nothing else notifies for it).
+    _paths: Task<()>,
 }
 
 impl DevicesPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        let paths = cx.spawn(async move |this, cx| {
+            let mut shown = Vec::new();
+            loop {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                let Ok(now) = this.update(cx, |this, cx| link_paths(this.state.read(cx))) else {
+                    return;
+                };
+                if now != shown {
+                    shown = now;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
         let pairing =
             cx.new(|cx| ComposerInput::new("Paste a pairing URL or roboco-tailcat:… invite", cx));
         let pairing_events = cx.subscribe(&pairing, |this: &mut Self, _, event, cx| {
@@ -123,6 +141,7 @@ impl DevicesPage {
             task: None,
             copy_task: None,
             _observe: observe,
+            _paths: paths,
         }
     }
 
@@ -333,6 +352,28 @@ impl popover::ScrollRailHost for DevicesPage {
     }
 }
 
+/// A connected remote engine's Tailcat path, as its row shows it: "Direct ·
+/// 35 ms" or "Via relay (Tokyo) · 160 ms" (fleet-redesign 16). `None` for
+/// the local engine, LAN engines, and until the adapter has measured it.
+fn link_path_label(state: &AppState, key: &EngineKey) -> Option<String> {
+    if key.is_local() {
+        return None;
+    }
+    let dial = state.registry()?.relay_dial(key)?;
+    crate::tailcat_pairing::link_path(&dial.endpoint).map(|path| path.label())
+}
+
+/// Every connected remote engine's path label (the refresh compares them).
+fn link_paths(state: &AppState) -> Vec<(EngineKey, Option<String>)> {
+    state
+        .registry_snapshot
+        .engines
+        .iter()
+        .filter(|engine| engine.state == EngineConnectionState::Connected)
+        .map(|engine| (engine.key.clone(), link_path_label(state, &engine.key)))
+        .collect()
+}
+
 /// Human platform label (roboco settings.devices.tsx `platformLabel`).
 pub fn platform_label(platform: &str) -> &str {
     match platform {
@@ -396,7 +437,7 @@ impl Render for DevicesPage {
                         .find(|e| &e.key == key)
                 })
                 .map(|e| e.state.clone());
-            let forget_key = engine_key.filter(|key| !key.is_local());
+            let forget_key = engine_key.clone().filter(|key| !key.is_local());
             let is_local = local_id.as_deref() == Some(device.id.as_str());
             let id_copied = copied.as_deref() == Some(device.id.as_str());
             let copy_id = device.id.clone();
@@ -433,9 +474,10 @@ impl Render for DevicesPage {
                     );
                 }
             } else if let Some(connection) = connection {
+                let connected = connection == EngineConnectionState::Connected;
                 meta.push(
                     div()
-                        .text_color(if connection == EngineConnectionState::Connected {
+                        .text_color(if connected {
                             theme.success_muted
                         } else {
                             theme.text_muted
@@ -447,6 +489,13 @@ impl Render for DevicesPage {
                         }))
                         .into_any_element(),
                 );
+                if let Some(label) = engine_key
+                    .as_ref()
+                    .filter(|_| connected)
+                    .and_then(|key| link_path_label(self.state.read(cx), key))
+                {
+                    meta.push(div().child(SharedString::from(label)).into_any_element());
+                }
             } else if online {
                 meta.push(
                     div()

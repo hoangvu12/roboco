@@ -1,0 +1,279 @@
+pr	state	date	title	status	audit	note
+#1086	open	2026-10-27	Cloud: an Anthropic API key can name its LLM gateway	skipped:cloud	SKIP:cloud prs-A	All of it is Cloud-vault plumbing. A local ANTHROPIC_BASE_URL per account would be a separate idea
+#1084	open	2026-10-27	Fix the Windows Icon to not be macOS'y	already	ALREADY prs-A	Binary-only PR
+#1081	open	2026-10-27	CI: LLD and a Dev Drive for Windows builds (~11% faster)	watch	FIX-CANDIDATE (slice) prs-A	Stacked on #1077, but the two composite actions (fast-linker, Dev Drive in windows-ci-setup) are separable. M…
+#1080	open	2026-10-27	Find in thread (⌘F) and message search in the command palette	ticketed wave10-78	FEATURE-CANDIDATE prs-A	New RPC (wiregen); FTS5 index is engine-local (fits ADR 0004). Demo only, no review
+#1079	open	2026-10-27	Tasks and side chats: chats report back when they're done	watch	FEATURE-CANDIDATE (Coordinator/Tasks slice) prs-A	Stacked on #1076 (Cloud); no review
+#1077	open	2026-10-27	CI: one entry workflow with admission, reuse, priority/locks	skipped:upstream-ci	SKIP:upstream-ci prs-A	Ideas worth stealing: stress-round env knob, merging small tests/.rs into one tests/misc binary (link time)
+#1076	open	2026-10-27	Agents reach sleeping Cloud machines, Cloud machines stay up	ticketed wave10-09	FIX-CANDIDATE (MCP robustness slice) prs-A	Cloud wake/heartbeat/edge parts are skipped. Bad-input-line skip is ALREADY (jsonrpc.rs:115-125)
+#1075	open	2026-10-27	Settings search: Windows test no longer expects the Appshots page	skipped:n/a	N/A prs-A	Take it together with #1018 if that is ported (appshots::is_desktop() is false on Windows, appshots.rs:27)
+#1074	closed	2026-10-27	Side chats report back without flooding the parent	superseded	SUPERSEDED closed	Report-back already in Roboco (engine/src/completion_notices.rs; part-prs-A.md #1079)
+#1072	open	2026-10-27	Visuals: tabs that switch, livelier charts, script reference	skipped:n/a	N/A prs-A	Only matters if Luau Visuals (#900) is ported
+#1071	open	2026-10-26	edge: reduce redundant Durable Object storage writes	skipped:cloud	SKIP:cloud prs-A	
+#1059	open	2026-10-27	Android: smoother Sessions page while agents work	skipped:upstream-android	SKIP:upstream-android prs-A	Perf idea for our Sessions screen; not checked in depth
+#1058	open	2026-10-26	Android: open chat history with a swipe	skipped:upstream-android	SKIP:upstream-android prs-A	Roboco Android uses predictive back (apps/android/parity/CHECKLIST.md:122)
+#1057	open	2026-10-26	Android: a usage pill in the composer with a quick account switcher	skipped:upstream-android	SKIP:upstream-android prs-A	Its lenient decoder for unknown agents is a good idea for mobile-client
+#1056	open	2026-10-26	Android: long pickers open as a searchable, sortable sheet (draft)	skipped:upstream-android	SKIP:upstream-android prs-A	
+#1055	open	2026-10-26	Android: Sessions groups show their first 5 chats	skipped:upstream-android	SKIP:upstream-android prs-A	Small UX idea, not iPhone behaviour
+#1053	open	2026-10-26	Sidebar: show persistent provider usage cards (draft)	ticketed wave10-78	FEATURE-CANDIDATE prs-A	DRAFT, unreviewed
+#1050	open	2026-10-26	Projects: choose checkout icons with image previews (draft)	watch	FEATURE-CANDIDATE prs-A	DRAFT; wire/doc change; iOS slice maps to Android parity
+#1033	open	2026-10-26	Transcript: show when a reply finished, not when it started (draft)	ticketed wave10-78	FIX-CANDIDATE prs-A	DRAFT. Cheap port: created_at + duration_ms
+#1006	open	2026-10-24	Terminal: libghostty-vt, sprite glyphs, ligatures, graphemes	ticketed wave10-78	FEATURE-CANDIDATE (risky) prs-A	Needs Zig 0.16 on Windows/Linux dev and CI, +6k lines, unreviewed. The sprite-glyph renderer alone is the low…
+#989	open	2026-10-25	Experimental: edit agent memory, stop one command/subagent, system prompt	watch	FEATURE-CANDIDATE prs-A	+9480, no review. System-prompt setting is the smallest slice (S-M)
+#987	open	2026-10-24	Side chats: move one into the sidebar as its own session	ticketed wave10-78	FEATURE-CANDIDATE prs-A	no review
+#986	open	2026-10-25	Titlebar: order the pane and explorer toggles like the columns they open	ticketed wave10-24	FIX-CANDIDATE prs-A	pure child swap
+#979	open	2026-10-23	chat3: transcript plane behind a labs flag	skipped:cloud	SKIP:cloud prs-A	
+#976	open	2026-10-23	Bump the github-actions group (10 updates)	skipped:version-bump	SKIP:version-bump prs-A	Bump these ourselves before GitHub removes Node 20 actions
+#965	open	2026-10-24	Session notes: a synced Markdown scratchpad per main chat	ticketed wave10-78	FEATURE-CANDIDATE prs-A	outbox/ChatRoom sync parts N/A; an engine-local slice would port
+#964	open	2026-10-26	Add Lua scripts	watch	FEATURE-CANDIDATE prs-A	reuses upstream's visuals runtime Roboco lacks
+#963	open	2026-10-20	Drag side-chat tabs into a composer to mention them	watch	FEATURE-CANDIDATE prs-A	no wire change
+#960	open	2026-10-20	Settings: choose when idle sessions close	ticketed wave10-78	FEATURE-CANDIDATE prs-A	
+#959	open	2026-10-20	OpenCode: wait for the settled command catalog and route /compact	ticketed wave10-15	FIX-CANDIDATE prs-A	only a quota-failed Copilot review
+#955	open	2026-10-19	Engine: run git with the login-shell PATH so worktree hooks find user tools	ticketed wave10-17	FIX-CANDIDATE prs-A	2 lines; on Windows also merges registry user PATH
+#952	open	2026-10-19	Claude: stop doubling a foreground subagent's opening prompt (draft)	ticketed wave10-47	FIX-CANDIDATE prs-A	DRAFT; confirm with a live capture
+#951	open	2026-10-19	Docs: add French README	skipped:translation-docs	SKIP:translation-docs prs-A	
+#949	open	2026-10-19	Lightbox: fix image flicker on open	ticketed wave10-24	FIX-CANDIDATE prs-A	+35/-2 with test; upstream main unchanged
+#946	open	2026-10-18	Composer: drop a browser tab in as a web page mention	ticketed wave10-78	FEATURE-CANDIDATE prs-A	proto prompt addition (roboco-web: scheme); touches Linux helper.c
+#945	open	2026-10-18	Prototype: split view for chat multiplexing (draft)	watch	STALE/RISKY prs-A	exploration
+#944	open	2026-10-17	Computer use, desktop pets, and video wallpapers	skipped:macos-only	SKIP:macos-only (pets slice FEATURE) prs-A	author never compiled Windows/Linux; novelty
+#941	closed	2026-10-24	Terminal: cut remote keystroke latency (ordered writes, leading-edge batching, incremental diffs)	superseded	SUPERSEDED (replacement MISSING; tracked by #975 / wave-9 #17) closed	#975 is MISSING in part-07.md (wave-9 #17). HEAD still has the 12 ms trailing-edge window (ui/src/terminal/vi…
+#940	open	2026-10-17	UI polish: titlebar, settings, sidebar, context popover	ticketed wave10-24	STALE/RISKY (portable slices = FIX) prs-A	maintainer ping unanswered; cherry-pick ideas, not the branch
+#939	open	2026-10-25	Right pane: on-demand split panes	ticketed wave10-78	FEATURE-CANDIDATE prs-A	+2.4k, unreviewed
+#938	open	2026-10-17	Markdown: neutral inline code styling	ticketed wave10-78	FIX-CANDIDATE (taste) prs-A	author: "personal preference"
+#937	open	2026-10-16	feat(ios): home screen, lock screen and control centre widgets	skipped:ios	SKIP:ios prs-A	
+#936	open	2026-10-24	Composer: drag pull request tabs in as mention chips	skipped:n/a	N/A prs-A	depends on upstream PR board
+#935	open	2026-10-16	feat(browser): visualize design controls and local widget state (draft)	watch	FEATURE-CANDIDATE (risky) prs-A	macOS-validated only; low value
+#934	open	2026-10-16	feat(browser): preview session HTML content references (draft)	watch	FEATURE-CANDIDATE prs-A	WebView2/Linux unverified by author
+#933	open	2026-10-16	fix(markdown): render Codex file citations as file links (draft)	ticketed wave10-06	FIX-CANDIDATE prs-A	fixes desktop and Android at once; closes upstream #424
+#932	open	2026-10-16	Fix shifted word deletion in text inputs	ticketed wave10-78	FIX-CANDIDATE prs-A	mostly a macOS complaint; small Windows value
+#930	open	2026-10-26	Add Oh My Pi as a native RPC harness	ticketed wave10-78	FEATURE-CANDIDATE prs-A	wire change; Muse was declined, so same product call
+#928	open	2026-10-16	Claude in Chrome: per-device setting, toggle + MCP	ticketed wave10-78	FEATURE-CANDIDATE prs-A	stacked on #926/#927; drop relay targetDeviceId parts
+#927	open	2026-10-16	fix: slash menu loads in ~1s, then instantly	already	ALREADY prs-A	Roboco lacks stale-while-revalidate past 2 min (minor)
+#926	open	2026-10-16	mcp: launch args for agent chats	ticketed wave10-78	FEATURE-CANDIDATE prs-A	wire + capability; base of #928
+#925	open	2026-10-16	Chat chips show their session's harness mark	ticketed wave10-78	FIX-CANDIDATE (polish) prs-A	author blames unrelated flaky test for CI
+#924	open	2026-10-16	Luau art: home visual + generative new-thread background (draft)	skipped:n/a	N/A prs-A	
+#923	open	2026-10-26	Pull requests: Show commits in the activity rail	skipped:n/a	N/A prs-A	the PR board itself is the gap (main-branch audit)
+#922	open	2026-10-16	fix: codex chats fail on omarchy (mise)	already	ALREADY prs-A	leftover: model_context.rs:81-84 canonicalizes before binary_version (affects only a context-cache key)
+#919	closed	2026-10-23	Drop the frost blur while the window is inactive; pause animations by default	ticketed wave10-78	MISSING (low; withdrawn upstream) closed	Same as upstream: settings.rs:1145 default false. The pause setting itself is ported (#642, motion.rs:868). T…
+#918	closed	2026-10-23	Release parked agent CLIs after 10 min idle	superseded	SUPERSEDED (Roboco design) closed	Roboco handled this its own way: a warm-park LRU budget of 8 (engine/src/sessions.rs:5011-5016, ROBOCO_WARM_S…
+#917	closed	2026-10-23	Preview discovery: scan only own processes, park when idle	ticketed wave10-08	FIX-CANDIDATE (Windows slice) closed	Scoping ported (ROBOCO_ORIGIN, preview/src/discovery.rs:1050). Windows cost unaddressed: every 2 s (preview/s…
+#916	open	2026-10-15	Voice: dot-matrix glyph everywhere, phone dictation through host (draft)	skipped:ios	SKIP:ios prs-A	+8384/-5901
+#914	open	2026-10-27	Pull request pane follows the shared panel layout (draft)	skipped:n/a	N/A prs-A	
+#911	open	2026-10-24	Markdown preview: run zeron-visual fences as native visuals	skipped:n/a	N/A prs-A	
+#910	open	2026-10-15	Add toggle to keep wallpaper visible during sessions	watch	FEATURE-CANDIDATE prs-A	overlaps #838 (pick one)
+#908	open	2026-10-14	Add "Side chat" to the right pane's new-tab menu	ticketed wave10-78	FIX-CANDIDATE (polish) prs-A	+18 lines
+#906	closed	2026-10-24	Count working side chats in the running pill	superseded	SUPERSEDED (Roboco has it; sidebar slice tracked under #647) closed	Roboco did it itself. Android rows: mobile-client/src/workspace/view.rs:614,635 working_children; feature com…
+#904	open	2026-10-24	MCP: add_project lets agents register a folder on their own device	ticketed wave10-78	FEATURE-CANDIDATE prs-A	new RPC
+#898	open	2026-10-14	Visual replies: agents show HTML pages inline	watch	STALE/RISKY prs-A	
+#897	open	2026-10-14	Start new projects from a GitHub repository	ticketed wave10-78	FEATURE-CANDIDATE prs-A	spam comment only
+#891	open	2026-10-13	Add Muse support as a native harness	declined	DECLINED prs-A	upstream later merged Muse via #978
+#888	open	2026-10-13	Android: swipe from the left edge for chat history	skipped:upstream-android	SKIP:upstream-android prs-A	
+#887	open	2026-10-13	Settings: forget an old device	already	ALREADY prs-A	upstream targets cloud device registry
+#886	open	2026-10-13	Fix tool-chip image previews for screenshots outside chat cwd	already	ALREADY prs-A	
+#884	open	2026-10-13	Providers: add any ACP agent (registry + custom command)	ticketed wave10-78	FEATURE-CANDIDATE prs-A	maintainer-authored, still unmerged; wire change
+#882	open	2026-10-13	Show GitHub activity on the new-chat canvas	watch	FEATURE-CANDIDATE (low) prs-A	new RPC
+#880	open	2026-10-12	Support multiple Antigravity accounts with isolated profiles	ticketed wave10-78	FEATURE-CANDIDATE prs-A	quota-failed Copilot review only
+#879	open	2026-10-24	Command palette shortcut rebindable in settings	ticketed wave10-78	FIX-CANDIDATE (polish) prs-A	
+#878	open	2026-10-12	Zeron MCP: async delegation with background turn-end events	already	ALREADY prs-A	reviewer reproduced a P1 in the PR
+#869	open	2026-10-11	Fix flaky tests seen in CI	ticketed wave10-17	FIX-CANDIDATE prs-A	edge/doc_host_delivery parts N/A
+#868	open	2026-10-10	Desktop: reconnect to the engine daemon after it restarts	already	ALREADY prs-A	
+#865	open	2026-10-13	PR board: provider seam + GitLab adapter	ticketed wave10-78	FEATURE-CANDIDATE prs-A	+4685; Roboco also lacks the PR board UI itself
+#864	open	2026-10-10	CI: stop pull requests and tags saving Rust caches	watch	FIX-CANDIDATE prs-A	the voice-tests half is upstream-only
+#859	open	2026-10-10	Sidebar: open the project menu from a hover button	ticketed wave10-78	FIX-CANDIDATE (polish) prs-A	discoverability
+#854	open	2026-10-09	Open the terminal folder as a project with zeron	ticketed wave10-78	FEATURE-CANDIDATE prs-A	Windows-relevant (named pipe, installer PATH); macOS menu slice skipped
+#852	open	2026-10-09	Keep iOS voice calls active during video playback	skipped:ios	SKIP:ios prs-A	
+#851	open	2026-10-10	Transcript: resolve bare file names only in the linking chat's folder	ticketed wave10-06	FIX-CANDIDATE prs-A	port together with #796 (workspace_links.rs)
+#850	open	2026-10-09	ci(release): build Intel macOS DMG	skipped:macos-only	SKIP:macos-only prs-A	
+#849	open	2026-10-09	Claude: map an aborted turn result to interrupted	already	ALREADY prs-A	
+#847	open	2026-10-09	fix: opencode background subagent lifecycle	ticketed wave10-15	FIX-CANDIDATE prs-A	fixes upstream issue #845
+#840	open	2026-10-08	Stop tool-group shimmer on dead runs	already	ALREADY prs-A	
+#839	open	2026-10-08	Claude: end the command probe's input before reaping it	already	ALREADY prs-A	
+#838	open	2026-10-08	Appearance: add opt-in ambient chat wallpapers	watch	FEATURE-CANDIDATE prs-A	superset of #910
+#836	open	2026-10-15	Explorer: fold the file tree under a Files header	superseded	SUPERSEDED prs-A	
+#830	open	2026-10-07	Stream dictation and add optional GPU acceleration	watch	FEATURE-CANDIDATE prs-A	DirectML.dll / Dawn must ship in Windows zip / Linux tarball
+#822	open	2026-10-11	Add sidebar music player	ticketed wave10-78	FEATURE-CANDIDATE (low) prs-A	community: "should be an extension"; off-mission
+#817	open	2026-10-06	iOS: Render Markdown images inline (draft)	already	ALREADY prs-A	
+#815	open	2026-10-06	Composer: show device names beside projects	already	ALREADY (different design) prs-A	
+#808	open	2026-10-15	Accounts: show Claude's per-model weekly limits (Fable)	ticketed wave10-19	FIX-CANDIDATE prs-A	no wire change
+#807	open	2026-10-05	Delegated tasks: async results, nesting, status and cancel	already	ALREADY (core) prs-A	+16204; nesting deliberately absent ("side chats cannot create chats")
+#802	open	2026-10-15	Show Claude /compact in the chat and reset the context ring	ticketed wave10-18	FIX-CANDIDATE (partial) prs-A	a Claude /compact turn renders empty
+#800	closed	2026-10-18	Claude context usage for custom models: send the 1M the picker shows, measure streamed usage	ticketed wave10-19	FIX-CANDIDATE closed	Has all three bugs. (1) pickers.rs:5778-5792 folds an orphan <id>[1m] row into its base with contextWindow de…
+#798	open	2026-10-05	Edge: stop storing push head and backup flag (stage 2, draft)	skipped:cloud	SKIP:cloud prs-A	
+#797	open	2026-10-05	iOS: add session organization and project controls	watch	FEATURE-CANDIDATE prs-A	not an ADR 0009 target PR; unreviewed
+#796	open	2026-10-04	Transcript: Windows drive paths in replies are file links	ticketed wave10-06	FIX-CANDIDATE prs-A	high Windows value; Roboco's workspace_links.rs diverged (cc84b5f9a, 4927527af), so this is a hand port
+#795	open	2026-10-04	Sessions: the title's project tag opens its folder	skipped:n/a	N/A prs-A	
+#794	open	2026-10-04	Transcript: wheel direction decides tail-follow	ticketed wave10-24,62	FIX-CANDIDATE prs-A	
+#793	open	2026-10-04	Rail: the bottom mark stands for the newest prompt	ticketed wave10-24,63	FIX-CANDIDATE prs-A	
+#792	open	2026-10-04	Engine: settle live runs together on shutdown	ticketed wave10-16	FIX-CANDIDATE prs-A	~3 s × N live turns on daemon stop
+#791	open	2026-10-04	Projects: match saved folders across slash styles	ticketed wave10-05	FIX-CANDIDATE prs-A	mixed-separator projects exist from before 22ba72f8a
+#790	open	2026-10-15	Right pane: Ctrl+1…9 jump to tabs	ticketed wave10-78	FEATURE-CANDIDATE prs-A	Alt+digit clash risk in terminal tabs
+#788	open	2026-10-04	Add refresh button to the files explorer	ticketed wave10-78	FIX-CANDIDATE (polish) prs-A	
+#787	open	2026-10-25	Claude: show replies to local slash commands	ticketed wave10-18	FIX-CANDIDATE prs-A	/context, /cost, /usage, /mcp show empty
+#785	open	2026-10-25	Claude: open each Workflow agent's live transcript	ticketed wave10-78	FEATURE-CANDIDATE prs-A	stacked on #784; collides with #1041 is_chat_spawn gate
+#784	open	2026-10-15	Claude: show Workflow runs as subagents with live progress	ticketed wave10-78	FEATURE-CANDIDATE prs-A	in-process event; subagentTail already in doc schema
+#783	open	2026-10-04	Usage: show each chat's token totals (draft)	ticketed wave10-78	FEATURE-CANDIDATE prs-A	DRAFT
+#782	open	2026-10-06	Composer: long pastes become chips	ticketed wave10-78	FEATURE-CANDIDATE prs-A	built on upstream #775 chip style; verify first
+#781	open	2026-10-04	Fix missing window control icons on Windows 10	ticketed wave10-04	FIX-CANDIDATE prs-A	MERGEABLE; closes upstream #770; HIGH value
+#780	open	2026-10-05	Fix stale branch labels in the composer	ticketed wave10-25	FIX-CANDIDATE prs-A	additive wire field, so wiregen
+#779	open	2026-10-04	Desktop: open links and files externally with Ctrl+click	watch	FEATURE-CANDIDATE prs-A	also fixes focused-link click swallow; no WebView2 counterpart
+#776	open	2026-10-03	Worktrees: track created branches with a git config marker	watch	FEATURE-CANDIDATE (low) prs-A	only matters with configurable prefix
+#773	open	2026-10-03	Surface OpenCode V2 shell and Code Mode tool calls as chips	ticketed wave10-15	FIX-CANDIDATE prs-A	not fixed upstream either
+#769	open	2026-10-03	Fix stale subagent running status and add individual Stop controls	watch	STALE/RISKY prs-A	stale-Running-after-Codex-idle may still exist in Roboco; recheck if reported
+#765	open	2026-10-03	Fix OpenCode launcher process leaks on Unix	ticketed wave10-15	FIX-CANDIDATE (residual) prs-A	copy acp/child.rs:19,75-109 pattern
+#762	open	2026-10-04	Bound sync and terminal memory retention	watch	STALE/RISKY prs-A	author: "need to optimize valgrind ci… before merging"; reviewer flags 256→8 queue stutter risk, no Windows v…
+#761	open	2026-10-06	Per-device "Disable local execution" switch	watch	STALE/RISKY prs-A	+3158, no review; low fit for engine-local Roboco
+#759	open	2026-10-03	Recover initial Claude authentication failures on the run host	ticketed wave10-19	FIX-CANDIDATE (low) prs-A	Roboco's refresh_lock.rs already removes the main cause
+#758	open	2026-10-03	Harden device clocks and fix cross-device renaming	skipped:cloud	SKIP:cloud prs-A	
+#756	open	2026-10-03	Show account usage reset countdowns and banked resets	watch	STALE/RISKY prs-A	
+#755	open	2026-10-03	Harden OpenCode credentials, discovery, and Windows startup	ticketed wave10-15,78	FIX-CANDIDATE prs-A	big unreviewed bundle; verify OpenCode 2.x claim; port in slices
+#753	open	2026-10-03	Automatically use a new worktree when draft branch checkout conflicts	watch	FEATURE-CANDIDATE prs-A	new wire type
+#747	open	2026-10-02	Show a check on the error notice copy button after copying	ticketed wave10-26	FIX-CANDIDATE (polish) prs-A	
+#746	open	2026-10-05	Edge: cut ChatRoom and RegistryRoom push writes 5 → 3 (stage 1)	skipped:cloud	SKIP:cloud prs-A	
+#742	open	2026-10-03	Hide shell launch wrappers in command tool titles	ticketed wave10-07	FIX-CANDIDATE prs-B	+601/-95; Windows: Codex Run titles read "C:\…\powershell.exe" -Command '…'. Review asked to stop matching sh…
+#741	closed	2026-10-02	Show command scripts instead of shell binaries in tool displays	ticketed wave10-07	FIX-CANDIDATE (track with #742) closed	Raw commands: proto/src/view.rs:530, ui/src/transcript.rs:864, mobile/src/layout/tools.rs:171. On Windows, Co…
+#738	open	2026-10-02	Question panel: keep multi-line answers visible in the free-text input	ticketed wave10-28	FIX-CANDIDATE prs-B	+82/-0; Same bug as #629; take one (738 also clears resize/top-padding)
+#736	open	2026-10-02	docs: add UI architecture guide, fix stale tab navigation notes	skipped:docs-only	SKIP:docs-only prs-B	draft +368/-1
+#733	open	2026-10-02	Add a hidden-folders toggle to the New project palette	already	ALREADY prs-B	+258/-25; Different UX (typed . instead of a toggle)
+#732	open	2026-10-02	Keep typed paths in the New project search	already	ALREADY prs-B	+240/-38
+#731	open	2026-10-02	Live diff: show what an agent is changing above the composer	ticketed wave10-78	FEATURE-CANDIDATE prs-B	+1424/-179; Overlaps #115
+#728	open	2026-10-02	Let users dismiss agent update notices on Home	ticketed wave10-26	FIX-CANDIDATE prs-B	+150/-3; Home agent-update chip cannot be hidden
+#726	open	2026-10-01	Cloud: continue chats in a box in your own Cloudflare account	skipped:cloud	SKIP:cloud prs-B	+45935/-202
+#724	open	2026-10-02	Saved workflows: arguments, launcher, Settings page and /workflow (stacked on #719)	ticketed wave10-78	FEATURE-CANDIDATE prs-B	+50381/-266; Stacked on #719/#712/#708
+#723	open	2026-10-02	Workflows, goals and todos on mobile (stacked on #719)	watch	FEATURE-CANDIDATE prs-B	+43233/-302; Only after #712/#708; iOS half skip
+#722	open	2026-10-01	Permissions: see, add and remove standing rules in Settings	watch	FEATURE-CANDIDATE prs-B	+21205/-536; Stacked on #715
+#720	open	2026-10-01	Presets: named agents to start a chat as	watch	FEATURE-CANDIDATE prs-B	+20625/-536; Stacked on the permission stack
+#719	open	2026-10-02	Workflows: card, run pane, approval and artifact viewers on desktop (stacked on #712)	watch	FEATURE-CANDIDATE prs-B	+38123/-263; Stacked on #712
+#718	open	2026-10-01	Plan mode: present a plan, approve it, continue in the mode you pick	watch	FEATURE-CANDIDATE prs-B	+19107/-535; Stacked on #715
+#717	open	2026-10-01	Terminal: open links with Cmd/Ctrl+click	ticketed wave10-78	FEATURE-CANDIDATE prs-B	+649/-8; Ctrl+click on Windows/Linux; scheme allow-list
+#716	open	2026-10-01	Sandbox: run agents inside an OS sandbox	watch	FEATURE-CANDIDATE prs-B	+22459/-544; Check Windows coverage first
+#715	open	2026-10-04	Permissions: add Bypass, Auto, Accept edits, Ask and Plan modes	watch	FEATURE-CANDIDATE prs-B	+17373/-447; Base of the permission stack; its Codex sh -lc unwrapping overlaps #742
+#714	open	2026-10-01	iOS: fix composer attachment menu and iPad sidebar header	already	ALREADY prs-B	+115/-10
+#713	open	2026-10-01	Settings: add automatic steering for active chats	watch	FEATURE-CANDIDATE prs-B	draft +330/-48; Draft; product call
+#712	open	2026-10-02	Workflows: Starlark scripts orchestrate child agent chats, engine half (stacked on #708)	watch	FEATURE-CANDIDATE prs-B	+29412/-236; Stacked on #708
+#711	open	2026-10-01	Claude: label resolved defaults with live model names	ticketed wave10-18	FIX-CANDIDATE prs-B	+168/-9; New Claude releases are labelled "Default (recommended)"
+#710	open	2026-10-01	harness: key CLI versions by the path run, so mise-shimmed tools don't share one	ticketed wave10-17	FIX-CANDIDATE prs-B	+92/-8; Wrong Pi/Codex versions for mise users
+#709	closed	2026-10-08	Clean up login-shell probe descendants; block nested resolution	ticketed wave10-78	MISSING (low; Linux; withdrawn) closed	Partly present: setsid plus a group kill on timeout (harness/src/shell_env.rs:296-312). The success and early…
+#708	open	2026-10-04	Goal mode: /goal keeps a chat working until a verifier chat confirms (stacked on #707)	ticketed wave10-78	FEATURE-CANDIDATE prs-B	+10005/-97; CHANGES_REQUESTED; needs #707 Todo (merged upstream)
+#705	open	2026-10-01	feat(desktop): add persistent UI scaling	ticketed wave10-78	FEATURE-CANDIDATE prs-B	+743/-22
+#704	open	2026-10-01	Chats: move a live chat, its workspace and agent session to another device	watch	STALE/RISKY prs-B	+33117/-108; Conflicts with ADR 0004/0011; needs the localedge relay
+#703	open	2026-10-01	Claude: gate --thinking-display on what the resolved CLI accepts	ticketed wave10-18	FIX-CANDIDATE prs-B	+330/-8; Older Claude CLIs fail every run (and titles) with "unknown option"
+#702	open	2026-10-24	Drag terminal tabs from the composer drawer into the right sidebar	watch	FEATURE-CANDIDATE prs-B	+1900/-734; +1900/-734 in ui
+#701	open	2026-10-01	Add configurable desktop sleep prevention	ticketed wave10-78	FEATURE-CANDIDATE prs-B	+823/-1; Valuable on Windows laptops
+#700	open	2026-10-04	Android: on-device engine, sensory UI, usage and background activity	skipped:upstream-android	SKIP:upstream-android prs-B	+59274/-4530 conflicting
+#699	open	2026-10-01	Android: haptics, sounds and the compact model picker (stacked on #675)	skipped:upstream-android	SKIP:upstream-android prs-B	+25284/-1017 conflicting
+#698	open	2026-10-01	Add a "What's new" window after updates	ticketed wave10-78	FEATURE-CANDIDATE prs-B	+2318/-0; Roboco ships on GitHub Releases, so the notes source fits
+#690	open	2026-10-04	Projects: open New project on the device already in context	ticketed wave10-21	FIX-CANDIDATE prs-B	+64/-6; Start on the device in context
+#689	open	2026-10-01	New session: default to the last picked project and device	already	ALREADY prs-B	+88/-2
+#688	open	2026-10-04	Errors: Retry a failed turn by resending its prompt	ticketed wave10-26	FIX-CANDIDATE prs-B	+207/-17
+#687	open	2026-10-04	Errors: offer "Sign in again" when an agent is signed out	already	ALREADY prs-B	draft +169/-5; Draft
+#685	open	2026-09-30	Add folder creation to New project on desktop and iOS	already	ALREADY prs-B	+783/-14; No CreateFolder RPC by design
+#684	open	2026-10-04	Claude: launches take turns through an expired login	watch	STALE/RISKY prs-B	+308/-2; Author notes it must rebase on #748
+#680	open	2026-10-27	chore(cursor): update pinned SDK	watch	STALE/RISKY prs-B	+1/-1; Only after a cursor-compat run
+#679	open	2026-09-30	Appearance: show the background image in all sessions	watch	FEATURE-CANDIDATE prs-B	+275/-39 conflicting; CONFLICTING upstream
+#678	open	2026-09-30	Live updates (EXPERIMENTAL): install without asking, keep agents, commands and terminals running	watch	FEATURE-CANDIDATE prs-B	+28043/-1896; EXPERIMENTAL, +28k
+#675	open	2026-09-30	Android app features: developer tools, subagents, model picker, agent management (stacked on #609)	skipped:upstream-android	SKIP:upstream-android prs-B	+15284/-890 conflicting
+#674	open	2026-09-30	Files: right-click menu on tree rows, editable path in the file viewer	ticketed wave10-78	FEATURE-CANDIDATE prs-B	+923/-6; Port only the path-bar half
+#673	open	2026-09-30	Composer: live-synced drafts across devices	skipped:cloud	SKIP:cloud prs-B	+7683/-29 conflicting; Local persistence is #557
+#672	open	2026-09-30	Chats: refresh generated titles every 4 prompts	watch	FEATURE-CANDIDATE prs-B	+776/-22
+#671	open	2026-09-30	MCP: agents spawn real top-level chats or side chats on any device	already	ALREADY prs-B	+4207/-164
+#670	open	2026-09-30	Device-to-device file transfer: P2P tunnels with relay fallback, send_files / fetch_files for agents	watch	FEATURE-CANDIDATE prs-B	+14383/-19; Relay half is cloud (DeviceRoom); product call vs ADR 0011
+#667	open	2026-09-30	Monitor: live CPU, memory, GPU, network and disk usage per device	watch	FEATURE-CANDIDATE prs-B	+2553/-2
+#666	open	2026-09-30	perf(engine): serve cached ListSkills and ListCommands while refreshing	ticketed wave10-17,20	FIX-CANDIDATE prs-B	+129/-24; Slash menu waits 2-4 s per open
+#664	open	2026-09-30	fix(ios): apply model changes in open sessions	already	ALREADY prs-B	+72/-12
+#663	open	2026-10-04	Projects: offer the OS folder dialog in New project	ticketed wave10-21	FIX-CANDIDATE prs-B	+160/-12; "Browse in File Explorer…" row for the local device
+#662	open	2026-10-04	Notifications: show clickable desktop banners on Windows	ticketed wave10-04	FIX-CANDIDATE prs-B	+67/-9; HIGH: no desktop banners on Windows
+#659	closed	2026-10-04	Projects: Windows paths in the New project palette	ticketed wave10-05	FIX-CANDIDATE (copy only) closed	#727 ported (22ba72f8a), #998 ported (a39f89e37, 77a8e30a6). UNC is in (pickers.rs:329,382, test :9562), ~\co…
+#658	open	2026-09-29	fix(linux): use a single main category in the desktop entry	ticketed wave10-75	FIX-CANDIDATE prs-B	+1/-1; One line; entry listed twice in GNOME/KDE
+#656	open	2026-09-29	WIP: Native Codex provider and persistent iOS workspace	skipped:ios	SKIP:ios prs-B	draft +24308/-133
+#654	open	2026-09-29	Add Vesper to the built-in theme catalog	watch	FEATURE-CANDIDATE prs-B	draft +177/-5; Draft
+#653	open	2026-09-29	Transcript: make web tool links clickable	watch	FEATURE-CANDIDATE prs-B	draft +403/-26; Draft
+#649	open	2026-10-01	MCP: read subagent transcripts; keep resumed subagents on their spawn chip	watch	FEATURE-CANDIDATE prs-B	+301/-2
+#643	open	2026-09-29	Transcript: double-click drags keep selecting whole words	ticketed wave10-24	FIX-CANDIDATE prs-B	+134/-10
+#640	open	2026-09-29	MCP: search_chats finds content across every chat	ticketed wave10-78	FEATURE-CANDIDATE prs-B	+874/-14; Pairs with #516
+#639	open	2026-09-30	Android: the phone runs its own Zeron engine and the real agent CLIs in a Linux guest (stacked on #675)	skipped:upstream-android	SKIP:upstream-android prs-B	+37468/-1264 conflicting
+#629	open	2026-09-29	Composer: let the question panel's answer input grow past one line	ticketed wave10-28	FIX-CANDIDATE prs-B	+68/-0; Duplicate; take one
+#626	open	2026-09-29	Client: limit warm session residency by estimated size	ticketed wave10-43	FIX-CANDIDATE prs-B	+342/-25; Android memory; adapt to Roboco's mobile-client
+#625	open	2026-09-29	Mobile: add unit tests for the client_ffi conversion layer	watch	STALE/RISKY prs-B	+1492/-0
+#624	open	2026-09-29	iOS: flush the core off the main thread under a background task	skipped:ios	SKIP:ios prs-B	+69/-2
+#623	open	2026-09-29	Mobile: keep the layout worker alive when a layout pass panics	already	ALREADY prs-B	+138/-23
+#622	open	2026-10-26	Add native conversation fork/bifurcation into side chats or main threads	already	ALREADY prs-B	+8242/-104
+#621	open	2026-10-07	Android: add Android client	skipped:upstream-android	SKIP:upstream-android prs-B	draft +66426/-646
+#618	open	2026-09-29	Transcript: add a selection action bar (add to chat, reply in side chat)	ticketed wave10-78	FEATURE-CANDIDATE prs-B	+1885/-85
+#614	open	2026-09-28	Titles: follow-the-session from the session harness and model	ticketed wave10-15	FIX-CANDIDATE prs-B	+204/-27; OpenCode chats never get generated titles
+#613	closed	2026-09-28	Title follow-the-session with the session's model / opencode titles	superseded	SUPERSEDED (#614) closed	See part-prs-B.md #614 FIX-CANDIDATE
+#611	closed	2026-09-28	Title follow-the-session with the session's model / opencode titles	superseded	SUPERSEDED (#614) closed	See part-prs-B.md #614 FIX-CANDIDATE
+#610	open	2026-10-01	Unified Zeron and agent updates across devices	watch	STALE/RISKY prs-B	draft +4877/-531
+#608	open	2026-09-29	Agent orchestration: agents spawn, message and wait for Zeron chats	watch	STALE/RISKY prs-B	draft +16251/-1078
+#600	closed	2026-09-28	Harden auto-title cleaning and fallback truncation	superseded	SUPERSEDED (#614) closed	#614 is FIX-CANDIDATE in part-prs-B.md; nothing more here
+#583	open	2026-09-27	iOS: desktop model picker parity	skipped:ios	SKIP:ios prs-B	+1968/-218
+#581	open	2026-09-28	Fix scrolling in compact review comment inputs	ticketed wave10-26	FIX-CANDIDATE prs-B	+360/-24
+#566	open	2026-09-26	Add a Windows PowerShell installer	skipped:cloud	SKIP:cloud prs-B	+371/-16; Roboco ships an Inno installer and a portable zip
+#565	open	2026-09-28	Show full local reset dates below provider usage meters	watch	STALE/RISKY prs-B	+48/-69
+#562	open	2026-09-26	Render LaTeX math in Markdown	watch	STALE/RISKY prs-B	+2416/-68; Port #912, not this
+#559	open	2026-09-26	Cut CI wall-clock: parallel jobs, no LTO for tests, main-only caches	watch	STALE/RISKY prs-B	+129/-26
+#558	closed	2026-09-28	Enable Linux desktop updates from the sidebar	superseded	SUPERSEDED (ported) closed	Ported (part-04.md: 192076182, 297aa3d43 ui/src/app_update.rs)
+#557	open	2026-09-26	Drafts in chat.	ticketed wave10-25	FIX-CANDIDATE prs-B	+65/-6; Half-written prompts lost on restart
+#554	open	2026-09-26	feat(devices): allow removing devices	already	ALREADY prs-B	+226/-5
+#543	open	2026-10-25	Add persistent cross-device prompt drafts to the sidebar	skipped:cloud	SKIP:cloud prs-B	+6674/-167; Local-only persistence = #557
+#526	open	2026-10-02	feat: react web client	already	ALREADY prs-B	draft +174855/-61; Draft upstream
+#525	closed	2026-09-24	Keep saved agent logins alive across account switches	superseded	SUPERSEDED (ported) closed	Both ported: agent_accounts.rs:3957,3979 chatgpt_user_id, :127 CLAUDE_PROFILE_URL, harness/src/claude/refresh…
+#521	open	2026-09-25	feat: manage codex banked resets from account settings	watch	FEATURE-CANDIDATE prs-B	+749/-8
+#520	open	2026-09-30	feat: import local agent histories	watch	FEATURE-CANDIDATE prs-B	+836/-0; Windows histories can be huge (reviewer: 9.9 GB)
+#518	closed	2026-10-06	Session shortcut hints wrapping	superseded	SUPERSEDED (ported) closed	Ported f779045ed: COMPACT_JUMP_HINT_WIDTH and whitespace_nowrap at shell.rs:7988-7995
+#516	open	2026-09-30	Transcript search	ticketed wave10-78	FEATURE-CANDIDATE prs-B	+946/-10; SQLite FTS in engine; pairs with #640
+#515	open	2026-10-25	Add a remote-safe mark unread action to session menus	watch	FEATURE-CANDIDATE prs-B	draft +937/-41; Draft
+#513	closed	2026-09-26	Keep composer centered during width transitions	superseded	SUPERSEDED (via #677, which is MISSING) closed	Roboco matches upstream (composer_dock.rs:612). #677 is MISSING (part-06.md). Whether the drift still shows n…
+#496	open	2026-09-24	Add transcript selection comments	watch	FEATURE-CANDIDATE prs-B	+1457/-67; CHANGES_REQUESTED
+#495	open	2026-09-23	feat(chat): fork a session, transcript and all	already	ALREADY prs-B	+1300/-7
+#493	open	2026-09-28	Group the OpenCode model list under foldable providers	watch	FEATURE-CANDIDATE prs-B	+379/-21
+#491	open	2026-09-21	ios: make wipe lease test enter the dirty stop path	skipped:ios	SKIP:ios prs-B	+5/-1
+#478	open	2026-09-20	fix(ui): stabilize model picker when switching providers	watch	STALE/RISKY prs-B	+1/-1
+#475	closed	2026-09-21	Leaked temp unpack dirs from archive ACP adapters	superseded	SUPERSEDED (ported) closed	Ported 38ac6d7ca: harness/src/scratch.rs (private temp root per adapter run, _MEI cleanup test)
+#460	open	2026-10-10	Add Arc-style hover reveal for the collapsed sidebar	watch	FEATURE-CANDIDATE prs-B	+915/-18; Same idea as #386
+#458	open	2026-09-19	Fix text selection in non-first Markdown table cells / 修复 Markdown 表格非首列文本无法选中	already	ALREADY prs-B	+85/-8
+#452	closed	2026-09-21	Stabilize Antigravity discovery; suppress unsolicited sign-in	superseded	SUPERSEDED (ported) closed	Antigravity is a ported harness; #492's port line as in #475
+#451	open	2026-09-24	feat(i18n): add English and Simplified Chinese desktop UI	watch	FEATURE-CANDIDATE prs-B	+12573/-3091; +12.5k/-3k
+#446	open	2026-09-22	Format Devin Models for Reasoning and Improve Fusion UI Support.	ticketed wave10-56	STALE/RISKY prs-B	+852/-37; Track via the commit audit
+#432	open	2026-09-27	Add Oh My Pi as a supported harness	watch	STALE/RISKY prs-B	+503/-19 conflicting
+#430	open	2026-09-17	fix(ui): expose composer value to accessibility clients	ticketed wave10-25	FIX-CANDIDATE prs-B	+4/-0; 4 lines
+#428	closed	2026-09-22	Fix: show Cursor usage by model pool	ticketed wave10-19	FIX-CANDIDATE closed	engine/src/agent_accounts.rs:4465 cursor_usage_window shows one blended totalSpend/limit "Month" bar. Per the…
+#427	closed	2026-09-22	Configurable interface zoom shortcuts (Ctrl +/-/0)	ticketed wave10-78	MISSING (feature) closed	Missing. There are no zoom actions; ui_font_size exists (settings.rs:994) and is what the shortcuts would ste…
+#426	closed	2026-09-22	Fix truncated Cursor model discovery	superseded	SUPERSEDED (present) closed	Present: harness/src/cursor/shim.mjs:64-71 exitAfterFlush, used at :354,379
+#421	open	2026-09-17	Import Claude Code sessions as chats	watch	STALE/RISKY prs-B	draft +2379/-6
+#418	open	2026-09-16	Add Nix flake for NixOS installs and development	watch	FEATURE-CANDIDATE prs-B	+202/-0
+#417	open	2026-09-16	Fix OpenCode 2.0.5 model discovery via /api/status detection	already	ALREADY prs-B	+94/-9
+#395	open	2026-09-22	Support non-image file attachments on desktop	already	ALREADY prs-B	+825/-141
+#393	open	2026-09-16	Add synced side chats in the right sidebar	already	ALREADY prs-B	+1218/-24
+#388	open	2026-09-15	Agent rail: main and this session's subagents under the composer	watch	STALE/RISKY prs-B	draft +1218/-73
+#386	open	2026-09-15	Peek a collapsed pane by hovering its edge	watch	FEATURE-CANDIDATE prs-B	+290/-18; Pick one of #386/#460
+#384	open	2026-09-15	Jump back to an earlier prompt with double-Escape	watch	FEATURE-CANDIDATE prs-B	+464/-2
+#383	open	2026-09-16	Show the account's plan usage in the composer footer, with switching	already	ALREADY prs-B	+988/-88
+#382	open	2026-09-15	Identity marks for projects and people, with an optional picture	watch	STALE/RISKY prs-B	+448/-51
+#381	open	2026-09-15	Make the frost depth adjustable	watch	FEATURE-CANDIDATE prs-B	+178/-14
+#380	closed	2026-09-24	Reopen Settings where left; close with Escape	superseded	SUPERSEDED (ported) closed	Ported 7d8964d93: settings.rs:980 settings_section; shell.rs:5460 dismiss_settings_escape_surface, :7149-7150
+#375	open	2026-09-15	opencode: surface agents as agent/<name> picker rows	already	ALREADY prs-B	+120/-5
+#372	open	2026-09-15	Add Factory Droid as a first-class ACP harness	watch	FEATURE-CANDIDATE prs-B	+799/-156; ACP
+#363	open	2026-09-14	Forward the terminal wheel to programs that own the mouse or the alternate screen	ticketed wave10-67	FIX-CANDIDATE prs-B	+485/-28; The wheel does nothing inside claude/vim/less
+#356	open	2026-09-17	Rework model selector with loadout-backed slots	watch	STALE/RISKY prs-B	draft +7981/-500
+#331	closed	2026-09-11	Fix native text selection and task accordion behaviour	superseded	SUPERSEDED (present) closed	composer.rs:247-258 PressIntent::Word/Line; markdown selection markdown/render.rs:1210-1243
+#330	open	2026-09-11	Forward login-shell env vars (bashrc/zshrc exports) to harness children	watch	STALE/RISKY prs-B	+210/-41; Real Linux gap, deliberate upstream design
+#319	open	2026-09-24	Add authenticated shared web UI	skipped:cloud	SKIP:cloud prs-B	draft +45594/-1712
+#314	open	2026-09-10	Add a setting for opening pull requests in Linear or Graphite	watch	FEATURE-CANDIDATE prs-B	+421/-5
+#308	open	2026-09-10	Honor Claude Code's provider model mapping for Claude sessions	watch	STALE/RISKY prs-B	+483/-13; Alias remap is a product call
+#252	open	2026-09-09	Implement end-to-end encrypted workspace sync	skipped:cloud	SKIP:cloud prs-B	+29210/-391
+#246	closed	2026-09-04	Settle plan gate on crash recovery	skipped:n/a	N/A closed	Plan-gate parts (planStatus awaitingApproval) no longer exist upstream or in HEAD
+#235	open	2026-09-16	UI polish: settings memory, frost depth, identity marks, account usage, rewind, hover-peek, agent rail	watch	STALE/RISKY prs-B	draft +3727/-261 conflicting
+#223	closed	2026-09-04	Thinking peek scrolls its full text	superseded	SUPERSEDED (present) closed	In Roboco through the fork base: transcript.rs:408-424 THOUGHT_WRAP_COLS, thought_lines, :682 thought_item
+#206	closed	2026-08-22	Fix New Thread changing the sidebar project filter	superseded	SUPERSEDED (fixed) closed	No new_thread_in_space filter write in HEAD; space_filter = writes only clear it (shell.rs:2811) or appear in…
+#197	open	2026-08-21	Build Linux releases against the oldest glibc we support (fixes load failure on Ubuntu 22.04)	watch	FIX-CANDIDATE prs-B	+103/-7
+#188	open	2026-08-20	iOS: slash commands and @-mentions in the composer	watch	STALE/RISKY prs-B	+2218/-37 conflicting
+#115	open	2026-10-09	Transcript: end-of-turn edit summary card with click-through to a turn-diff tab	watch	FEATURE-CANDIDATE prs-B	+1010/-17; CHANGES_REQUESTED
+#99	open	2026-08-15	Show an ErrorChip when a prompt turn is force-settled	ticketed wave10-78	FIX-CANDIDATE prs-B	+92/-13; Product call
+#98	closed	2026-09-10	Exempt Pi from the 30s ACP quiet-settle	skipped:n/a	N/A closed	Pi runs over native RPC in Roboco (harness/src/pi/wire.rs); the ACP quiet-settle no longer applies
+#94	closed	2026-09-10	Skip the 15s heartbeat on parked or settled folds	superseded	SUPERSEDED (design moved on; low) closed	Same as upstream: sessions.rs:5142-5144 touch_session (10 s throttle, :2820). A parked run publishes a non-Wo…
+#89	open	2026-08-15	feat(ui): make mounted volumes reachable from the project picker	already	ALREADY prs-B	+113/-76
+#87	open	2026-09-29	Add Oh My Pi as its own agent	ticketed wave10-78	FEATURE-CANDIDATE prs-B	+171/-11; Users asking in comments
+#82	closed	2026-09-07	Pending import retry survives an app restart	skipped:n/a	N/A closed	engine/src/local_import.rs is absent upstream and in HEAD (synced import, removed)
+#22	closed	2026-09-03	Terminal: new-tab, select-all, close-tab shortcuts	ticketed wave10-78	MISSING (feature) closed	Missing. Ctrl+W closes the whole right-pane surface (shell.rs:4295 close_active_surface), not one terminal ta…
+#17	open	2026-08-04	Bound Rust development cache growth	watch	STALE/RISKY prs-B	draft +174/-1
+#9	closed	2026-09-03	Native keyboard scrolling of the chat history	ticketed wave10-78	MISSING (feature) closed	Missing. HEAD's only "up" | "down" handlers are in the command palette, sidebar sections and spaces. The tran…

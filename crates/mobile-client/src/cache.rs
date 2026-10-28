@@ -335,9 +335,9 @@ mod tests {
                 .pins_by_profile
                 .contains_key("p")
         );
-        // The current format is entries + digests in one file; the legacy
-        // entries-only reader misses it by design (it reads bare arrays).
-        assert!(handle.load_transcript("chat").is_none());
+        // The current format is entries + digests in one file; the
+        // entries-only reader reads it too (and bare legacy arrays).
+        assert_eq!(handle.load_transcript("chat").map(|entries| entries.len()), Some(0));
         let state = handle.load_transcript_state("chat").unwrap();
         assert!(state.entries.is_empty());
         assert_eq!(state.digests.get("m0").map(String::as_str), Some("d0"));

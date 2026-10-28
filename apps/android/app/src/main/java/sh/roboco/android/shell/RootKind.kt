@@ -33,22 +33,35 @@ sealed interface RootInput {
 }
 
 /**
- * The single owner of the 840 dp split breakpoint (the spec's
- * `screenWidthDp >= 840` threshold, measured on the real root width —
- * `pr621:ZeronRoot.kt:245-246`). Tickets 33, 104, 105 and 108 reference
- * this constant. Inclusive: exactly 840 dp is the split; there is no
- * hysteresis.
+ * The single owner of the split breakpoint, measured on the real root
+ * width. Tickets 33, 104, 105 and 108 reference this constant. Inclusive;
+ * no hysteresis.
+ *
+ * Wave-10 42 (user decision 2026-10-28): a tablet held upright follows the
+ * iPad — split when wide enough. The narrowest iPad that splits in
+ * portrait is the iPad mini at 744 pt, so the breakpoint is 744 dp (it was
+ * Material's 840 dp "expanded" class, which kept every portrait tablet on
+ * the phone layout).
  */
-val SplitBreakpoint: Dp = 840.dp
+val SplitBreakpoint: Dp = 744.dp
 
 /**
- * The root on screen. `!hasEngines` wins over the width: a tablet with no
- * engine pairs, it never splits. The width is re-evaluated live (fold,
- * multi-window resize, rotation) — a width change never goes through the
- * cross-fade.
+ * Wave-10 42 (I1): below this height the window is a phone held sideways
+ * (a Pixel 7 in landscape is ~915 × 400 dp), which keeps the phone layout
+ * however wide it is — iOS's compact height class.
  */
-fun chooseRoot(hasEngines: Boolean, width: Dp): RootKind = when {
+val CompactHeight: Dp = 480.dp
+
+/**
+ * The root on screen. `!hasEngines` wins over the size: a tablet with no
+ * engine pairs, it never splits. A compact-height window (a landscape
+ * phone) stays on the phone layout; otherwise the width decides. Both are
+ * re-evaluated live (fold, multi-window resize, rotation) — a change never
+ * goes through the cross-fade.
+ */
+fun chooseRoot(hasEngines: Boolean, width: Dp, height: Dp = Dp.Infinity): RootKind = when {
     !hasEngines -> RootKind.Pairing
+    height < CompactHeight -> RootKind.Phone
     width >= SplitBreakpoint -> RootKind.Split
     else -> RootKind.Phone
 }

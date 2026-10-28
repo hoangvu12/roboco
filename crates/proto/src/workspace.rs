@@ -36,6 +36,13 @@ pub mod capabilities {
     /// Fleet follow: `RoomJoin` and `GetFleetInvite`, plus fleet rooms that
     /// retain their secret on member engines (ADR 0011 amendment).
     pub const ROOMS_V2: &str = "rooms-v2";
+    /// The host runs a chat on whichever provider its config names,
+    /// resuming each provider's own session and marking the switch in the
+    /// transcript (wave-9 10's engine port of upstream #966). Upstream's
+    /// string; clients offer other providers' models only when the host
+    /// advertises it — an older host would hand one provider another's
+    /// session id.
+    pub const PROVIDER_SWITCH_V1: &str = "provider-switch-v1";
 
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,
@@ -50,6 +57,7 @@ pub mod capabilities {
         UPLOADS_100MB_V1,
         ROOMS_V1,
         ROOMS_V2,
+        PROVIDER_SWITCH_V1,
     ];
 
     pub fn current() -> Vec<String> {

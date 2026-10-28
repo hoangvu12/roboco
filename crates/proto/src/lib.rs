@@ -15,6 +15,7 @@ pub mod layout;
 pub mod motion;
 pub mod preview;
 pub mod projectless;
+pub mod providers;
 pub mod qr;
 pub mod remote;
 pub mod room;

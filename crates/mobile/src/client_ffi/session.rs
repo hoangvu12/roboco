@@ -113,6 +113,10 @@ pub struct HostCapabilities {
     pub queued_attachments: bool,
     /// The chat's harness steers mid-turn (unknown until a live catalog).
     pub mid_turn_steering: Option<bool>,
+    /// The host switches a chat's provider between turns (wave-10 39,
+    /// upstream #966's `providerSwitch`).
+    #[uniffi(default = false)]
+    pub provider_switch: bool,
 }
 
 impl From<mc::HostCapabilities> for HostCapabilities {
@@ -125,6 +129,7 @@ impl From<mc::HostCapabilities> for HostCapabilities {
             queue_edit_lease: caps.queue_edit_lease,
             queued_attachments: caps.queued_attachments,
             mid_turn_steering: caps.mid_turn_steering,
+            provider_switch: caps.provider_switch,
         }
     }
 }

@@ -158,9 +158,114 @@ impl TailcatInvite {
     }
 }
 
+/// How a Tailcat client last reached its engine (fleet-redesign 16):
+/// directly, or through a relay region, with the measured round trip. The
+/// adapter's status line, and `roboco_tailcat_path`'s reply:
+/// `{"path":"direct","rttMs":35}` or
+/// `{"path":"relay","region":"tok","rttMs":160}`. Never an address or a key
+/// (ADR 0008): the region is a short code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPath {
+    pub path: LinkPathKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    pub rtt_ms: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkPathKind {
+    Direct,
+    Relay,
+}
+
+impl LinkPath {
+    /// Parse one status line; anything malformed is `None`.
+    pub fn parse(line: &str) -> Option<Self> {
+        let mut path: Self = serde_json::from_str(line.trim()).ok()?;
+        // Keep the region a short code, whatever the adapter sent.
+        path.region = path.region.filter(|code| {
+            !code.is_empty()
+                && code.len() <= 16
+                && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        });
+        Some(path)
+    }
+
+    /// The row label: "Direct · 35 ms", "Via relay (Tokyo) · 160 ms".
+    pub fn label(&self) -> String {
+        match self.path {
+            LinkPathKind::Direct => format!("Direct · {} ms", self.rtt_ms),
+            LinkPathKind::Relay => match self.region.as_deref() {
+                Some(code) => format!("Via relay ({}) · {} ms", relay_city(code), self.rtt_ms),
+                None => format!("Via relay · {} ms", self.rtt_ms),
+            },
+        }
+    }
+}
+
+/// The city of a Tailscale DERP region code ("tok" → "Tokyo"); an unknown
+/// code (a custom DERP map) shows as itself, upper-cased.
+pub fn relay_city(code: &str) -> String {
+    let city = match code.to_ascii_lowercase().as_str() {
+        "nyc" => "New York",
+        "sfo" => "San Francisco",
+        "sin" => "Singapore",
+        "fra" => "Frankfurt",
+        "syd" => "Sydney",
+        "blr" => "Bangalore",
+        "tok" => "Tokyo",
+        "lhr" => "London",
+        "sao" => "São Paulo",
+        "ord" => "Chicago",
+        "dfw" => "Dallas",
+        "sea" => "Seattle",
+        "den" => "Denver",
+        "mia" => "Miami",
+        "hkg" => "Hong Kong",
+        "nai" => "Nairobi",
+        "jnb" => "Johannesburg",
+        "mad" => "Madrid",
+        "waw" => "Warsaw",
+        "par" => "Paris",
+        "ams" => "Amsterdam",
+        "hnl" => "Honolulu",
+        "tor" => "Toronto",
+        "lax" => "Los Angeles",
+        "dbi" => "Dubai",
+        "nue" => "Nuremberg",
+        "hel" => "Helsinki",
+        "ash" => "Ashburn",
+        "mel" => "Melbourne",
+        "bom" => "Mumbai",
+        "scl" => "Santiago",
+        "bog" => "Bogotá",
+        "qro" => "Querétaro",
+        _ => return code.to_ascii_uppercase(),
+    };
+    city.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_paths_parse_the_adapter_lines_and_label_them() {
+        let direct = LinkPath::parse(r#"{"path":"direct","rttMs":35}"#).unwrap();
+        assert_eq!(direct.label(), "Direct · 35 ms");
+        let relay = LinkPath::parse(r#"{"path":"relay","region":"tok","rttMs":160}"#).unwrap();
+        assert_eq!(relay.label(), "Via relay (Tokyo) · 160 ms");
+        let custom = LinkPath::parse(r#"{"path":"relay","region":"sg-1","rttMs":20}"#).unwrap();
+        assert_eq!(custom.label(), "Via relay (SG-1) · 20 ms");
+        // A region that is not a short code is dropped, never shown.
+        let odd =
+            LinkPath::parse(r#"{"path":"relay","region":"10.0.0.1:41641","rttMs":9}"#).unwrap();
+        assert_eq!(odd.label(), "Via relay · 9 ms");
+        assert!(LinkPath::parse("not json").is_none());
+        assert!(LinkPath::parse(r#"{"url":"http://127.0.0.1:1"}"#).is_none());
+    }
 
     const ADDRESS: &str = "tcAAAABBBBccccDDDD_eeee-ffff0123";
 

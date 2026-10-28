@@ -229,6 +229,8 @@ fun RobocoSwitchVisual(fraction: () -> Float, lift: () -> Float, modifier: Modif
  * title and subtitle first, and a double-tap triggers this `onClick`.
  *
  * @param testTag the caller's [toggleTag]; `null` for untagged uses
+ * @param enabled `false` refuses every flip silently — no haptic, no
+ *   callback, the thumb springs back (wave-10 40's locked agent rows)
  */
 @Composable
 fun RobocoSwitch(
@@ -236,12 +238,14 @@ fun RobocoSwitch(
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
     testTag: String? = null,
+    enabled: Boolean = true,
 ) {
     val reduce = LocalReduceMotion.current
     val feedback = LocalFeedback.current
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     val latestChecked by rememberUpdatedState(checked)
     val latestOnChange by rememberUpdatedState(onCheckedChange)
+    val latestEnabled by rememberUpdatedState(enabled)
     val fraction = remember { Animatable(if (checked) 1f else 0f) }
     val lift = remember { Animatable(0f) }
     var dragging by remember { mutableStateOf(false) }
@@ -260,7 +264,7 @@ fun RobocoSwitch(
      * change — `.valueChanged` never fires for a programmatic `isOn` write.
      */
     fun commit(value: Boolean) {
-        if (value == latestChecked) return
+        if (value == latestChecked || !latestEnabled) return
         feedback.haptic(if (value) Haptic.ToggleOn else Haptic.ToggleOff)
         latestOnChange(value)
     }

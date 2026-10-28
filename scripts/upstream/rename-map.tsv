@@ -1,0 +1,24 @@
+# Upstream zeron -> Roboco rename map. The ONE table the upstream tools use.
+# It mirrors AGENTS.md "Porting from zeron" -> "Rename mapping" and "Rebrand
+# boundaries"; tests/test_rename_map.py checks every pair AGENTS.md lists.
+# Change both together.
+#
+# kind      what it does (applied in this order)
+# protect   token kept verbatim everywhere (masked before any rewrite)
+# regex     Python regex replacement, applied to file text after protect
+# text      literal replacement, applied to file text and paths, in file order
+# path      directory prefix rewrite, first match wins, applied before `text`
+# verbatim  path prefix whose file text is never rewritten (paths still map)
+#
+# kind	from	to	note
+protect	zeronsh/zeron	-	upstream repo slug in links and gh -R (before the bare org)
+protect	zeronsh	-	upstream org: GitHub links, PR/issue references
+protect	ZERON_GPU_STATS	-	env var owned by the zui fork, not this repo
+protect	zeron/main	-	the pristine mirror branch
+regex	(?<![A-Z_])CURSOR_SDK_SHIM_EXECUTABLE	ROBOCO_CURSOR_SDK_SHIM_EXECUTABLE	upstream ships it unprefixed
+text	ZERON	ROBOCO	ZERON_* env vars, ZERON_ANDROID_ABIS
+text	Zeron	Roboco	Zeron* type names (ZeronApplication, ZeronTheme, ...), display name
+text	zeron	roboco	zeron-* crates, zeron_* libs, apps/zeron/, sh.zeron.*, zeron://, zeron-file:, zeron_core, libzeron_mobile.so, -PzeronSkipCore
+path	crates/mcp/	crates/roboco-mcp/	Roboco renamed the MCP crate directory
+path	crates/client/	crates/mobile-client/	low confidence: Roboco's mobile client is a different design
+verbatim	docs/research/	-	historical research notes stay zeron-branded

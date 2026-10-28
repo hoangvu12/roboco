@@ -204,8 +204,12 @@ class ToastHostTest {
         val windowWidth = compose.onRoot().fetchSemanticsNode().size.width.toFloat()
         assertEquals("centred on the window (left gap == right gap)", bounds.left, windowWidth - bounds.right, 1f)
         assertEquals("bottom edge 12 dp above the chrome top", dpPx(722f), bounds.bottom, 1f)
-        assertEquals("capsule height 12 + 19.5 + 12", dpPx(43.5f), bounds.height, 1f)
-        assertEquals("'Archived · Undo' width (kerned)", dpPx(153.2f), bounds.width, dpPx(2f))
+        // Wave-10 42 (N7): the action is a filled capsule (insets 6/12, SemiBold 14),
+        // taller than the 19.5 dp label line, so the row takes its height.
+        val action = compose.onNodeWithTag("toast-action").fetchSemanticsNode()
+        assertTrue("the action capsule outgrows the label line", action.size.height > dpPx(19.5f))
+        assertEquals("capsule height 12 + action + 12", dpPx(24f) + action.size.height, bounds.height, 1f)
+        assertTrue("the action's insets widen 'Archived · Undo'", bounds.width > dpPx(153.2f))
     }
 
     @Test
@@ -576,7 +580,7 @@ class ToastHostTest {
     // ------------------------------------------------- long text
 
     @Test
-    fun aLongLabelTruncatesToOneLineInsideMaxWidthAndKeepsTheActionVisible() {
+    fun aLongLabelWrapsToTwoLinesInsideMaxWidthAndKeepsTheActionVisible() {
         val state = ToasterState()
         compose.setContent { Host(state, RecordingAnnouncer()) }
         compose.waitForIdle()
@@ -586,7 +590,8 @@ class ToastHostTest {
 
         val bounds = toastBounds()
         val windowWidth = compose.onRoot().fetchSemanticsNode().size.width.toFloat()
-        assertEquals("one line: the 43.5 dp capsule height", dpPx(43.5f), bounds.height, 1f)
+        // Wave-10 42 (N7): the label wraps to two lines (12 + 2 × 19.5 + 12).
+        assertEquals("two lines: the 63 dp capsule height", dpPx(63f), bounds.height, dpPx(1.5f))
         assertEquals("never wider than window − 48 dp", dpPx(345f), bounds.width, 1f)
         assertTrue(bounds.width < windowWidth - 4f)
         // The action is never truncated: fully visible inside its 20 dp end padding.

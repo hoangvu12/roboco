@@ -740,12 +740,25 @@ impl SessionDoc {
         &self,
         max_parts: usize,
     ) -> Result<Vec<SessionMessageEntry>, DocError> {
+        self.read_opening_tail_within(max_parts, usize::MAX)
+    }
+
+    /// [`Self::read_opening_tail`], also bounded by `max_bytes` of part
+    /// JSON: on a slow link a part count alone can make the first-paint
+    /// frame hundreds of KB (big tool outputs). The newest part is always
+    /// included, whatever its size.
+    pub fn read_opening_tail_within(
+        &self,
+        max_parts: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<SessionMessageEntry>, DocError> {
         use loro::{Container, ValueOrContainer};
         let messages = self.doc.get_list("messages");
         let mut remaining = max_parts;
+        let mut budget = max_bytes;
         let mut entries = Vec::new();
         for index in (0..messages.len()).rev() {
-            if remaining == 0 {
+            if remaining == 0 || budget == 0 {
                 break;
             }
             let Some(ValueOrContainer::Container(Container::Map(map))) = messages.get(index) else {
@@ -755,14 +768,30 @@ impl SessionDoc {
             let mut tail = Vec::new();
             if let Some(ValueOrContainer::Container(Container::List(parts))) = map.get("parts") {
                 let count = remaining.min(parts.len());
-                for part_index in parts.len().saturating_sub(count)..parts.len() {
+                // Newest first, until either bound is reached.
+                for part_index in (parts.len().saturating_sub(count)..parts.len()).rev() {
+                    if budget == 0 {
+                        break;
+                    }
                     if let Some(part) = parts.get(part_index) {
-                        tail.push(part.get_deep_value().to_json_value());
+                        let part = part.get_deep_value().to_json_value();
+                        let size = part.to_string().len();
+                        let first = entries.is_empty() && tail.is_empty();
+                        if size > budget && !first {
+                            budget = 0;
+                            break;
+                        }
+                        budget = budget.saturating_sub(size);
+                        tail.push(part);
                     }
                 }
-                remaining -= count.max(1).min(remaining);
+                tail.reverse();
+                remaining -= tail.len().max(1).min(remaining);
             } else {
                 remaining -= 1;
+            }
+            if tail.is_empty() && budget == 0 {
+                break;
             }
             value["parts"] = serde_json::Value::Array(tail);
             if let Ok(entry) = entry_from_json(value) {
@@ -796,6 +825,9 @@ impl SessionDoc {
         let raw: Vec<serde_json::Value> = serde_json::from_value(commands)?;
         Ok(raw
             .into_iter()
+            // No id yet: an entry `queue_command` is still writing, not a
+            // malformed one.
+            .filter(|v| v.get("id").is_some())
             .filter_map(|v| match serde_json::from_value(v) {
                 Ok(entry) => Some(entry),
                 Err(err) => {
@@ -807,10 +839,17 @@ impl SessionDoc {
     }
 
     /// Append a command entry (rule 1: own entries only, append-only).
+    ///
+    /// The map's keys land one op at a time, and a drain on another thread
+    /// reads the pending transaction before this commits — a freshly opened
+    /// chat's worker drains at once. `id` goes LAST: until it lands the
+    /// entry is unparseable and `read_commands` passes over it, so a drain
+    /// never executes a Run missing a later key (an `originChatId` dropped
+    /// that way made a parent's message read as user-typed, and its side
+    /// chat's turn owed no completion notice).
     pub fn queue_command(&self, entry: &SessionCommandEntry) -> Result<(), DocError> {
         let commands = self.doc.get_list("commands");
         let map = commands.push_container(LoroMap::new())?;
-        map.insert("id", entry.id.as_str())?;
         map.insert(
             "kind",
             serde_json::to_value(entry.kind())?
@@ -841,6 +880,7 @@ impl SessionDoc {
         if let Some(origin_chat_id) = &entry.origin_chat_id {
             map.insert("originChatId", origin_chat_id.as_str())?;
         }
+        map.insert("id", entry.id.as_str())?;
         self.doc.commit();
         Ok(())
     }
@@ -2040,6 +2080,40 @@ mod tests {
         );
     }
 
+    /// A byte budget stops the tail early on big parts, newest first, and
+    /// always keeps the newest part even when it alone is over budget.
+    #[test]
+    fn opening_tail_is_bounded_by_bytes_too() {
+        let doc = SessionDoc::init("whale").unwrap();
+        for turn in 0..10 {
+            doc.push_message(&SessionMessageEntry {
+                origin_chat_id: None,
+                id: format!("turn-{turn}"),
+                role: MessageRole::Assistant,
+                parts: vec![MessagePart::Text {
+                    id: format!("text-{turn}"),
+                    text: "x".repeat(10_000),
+                }],
+                created_at: turn,
+                device_id: "device".into(),
+                status: Some(MessageStatus::Complete),
+                continuation_of: None,
+                duration_ms: None,
+                provider_turn: None,
+            })
+            .unwrap();
+        }
+        let tail = doc.read_opening_tail_within(128, 35_000).unwrap();
+        assert_eq!(
+            tail.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["turn-7", "turn-8", "turn-9"]
+        );
+        let newest = doc.read_opening_tail_within(128, 10).unwrap();
+        assert_eq!(newest.len(), 1);
+        assert_eq!(newest[0].id, "turn-9");
+        assert_eq!(doc.read_opening_tail(128).unwrap().len(), 10);
+    }
+
     #[test]
     fn round_trips_message_entries() {
         let doc = SessionDoc::init("chat-1").unwrap();
@@ -2588,6 +2662,51 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].status, SessionCommandStatus::Applied);
         assert_eq!(commands[0].payload, entry.payload);
+    }
+
+    /// A drain reading the command log while `queue_command` writes never
+    /// sees an entry without its later keys: every entry it parses carries
+    /// the origin it was queued with (the completion_notices flake, where a
+    /// parent's Run executed as user-typed).
+    #[test]
+    fn a_concurrent_drain_never_reads_a_half_written_command() {
+        use crate::commands::{SessionCommandPayload, SessionCommandStatus};
+        const COMMANDS: usize = 2_000;
+        let doc = std::sync::Arc::new(SessionDoc::init("chat-1").unwrap());
+        let writer = {
+            let doc = doc.clone();
+            std::thread::spawn(move || {
+                for i in 0..COMMANDS {
+                    doc.queue_command(&SessionCommandEntry {
+                        origin_chat_id: Some("chat-parent".into()),
+                        id: format!("c{i}"),
+                        payload: SessionCommandPayload::Steer {
+                            prompt: "go".into(),
+                            message_id: None,
+                        },
+                        issued_by: "dev-a".into(),
+                        issued_at: 10,
+                        based_on: None,
+                        expires_at: None,
+                        status: SessionCommandStatus::Pending,
+                        resolution: None,
+                    })
+                    .unwrap();
+                }
+            })
+        };
+        while !writer.is_finished() {
+            for command in doc.read_commands().unwrap() {
+                assert_eq!(
+                    command.origin_chat_id.as_deref(),
+                    Some("chat-parent"),
+                    "{} parsed before its origin landed",
+                    command.id
+                );
+            }
+        }
+        writer.join().unwrap();
+        assert_eq!(doc.read_commands().unwrap().len(), COMMANDS);
     }
 
     #[test]

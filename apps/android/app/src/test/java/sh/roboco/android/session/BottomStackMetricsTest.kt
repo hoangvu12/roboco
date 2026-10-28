@@ -107,6 +107,18 @@ class BottomStackMetricsTest {
         assertEquals(0f, BottomStackMetrics.stackWidth(100f, 90f, 90f), 0.01f)
     }
 
+    /** Wave-10 42 (#1014): level with the sidebar toolbar, until the keyboard lifts it. */
+    @Test
+    fun besideTheSidebarTheRestingComposerCentresOnItsToolbar() {
+        // Wave-10 42 (#1014): a 1000 dp window, the toolbar's middle 56 up
+        // (nav 22 + gap 12 + half of 44): the 50 dp composer's bottom sits
+        // 25 below that middle — 969 — and the keyboard lifts it once its
+        // top passes the rest.
+        assertEquals(969f, BottomStackMetrics.stackBottomBesideToolbar(1000f, ime = 0f, toolbarMid = 56f), 0.001f)
+        assertEquals(969f, BottomStackMetrics.stackBottomBesideToolbar(1000f, ime = 20f, toolbarMid = 56f), 0.001f)
+        assertEquals(692f, BottomStackMetrics.stackBottomBesideToolbar(1000f, ime = 300f, toolbarMid = 56f), 0.001f)
+    }
+
     /** The IME wins over the nav bar; with neither, the gap is 8. */
     @Test
     fun stackBottomTakesTheMaxOfImeAndNav() {

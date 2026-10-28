@@ -754,6 +754,9 @@ impl Client {
         self.inner.foreground.send_replace(true);
         let state = lock(&self.inner.engines);
         for entry in &state.entries {
+            entry.route.set_background(false);
+        }
+        for entry in &state.entries {
             // A dial in flight (Connecting) finishes on its own; an offline
             // engine waits for the network.
             let command = match entry.state {
@@ -770,6 +773,9 @@ impl Client {
     /// subscriptions of detached, quiet sessions close (ticket 08).
     pub fn on_background(&self) {
         self.inner.foreground.send_replace(false);
+        for entry in &lock(&self.inner.engines).entries {
+            entry.route.set_background(true);
+        }
         {
             let cache_tx = self.inner.cache_tx.clone();
             crate::runtime::shared().spawn(async move {
@@ -785,6 +791,19 @@ impl Client {
         }
         drop(state);
         self.inner.sessions.close_background();
+    }
+
+    /// The platform is short of memory (Android `onTrimMemory`, wave-10 43):
+    /// evict warm sessions against a quarter of the budget, or — `critical`
+    /// — against none, keeping only what is on screen, streaming, sending,
+    /// and the most recently used one.
+    pub fn trim_memory(&self, critical: bool) {
+        let budget = if critical {
+            0
+        } else {
+            session::WARM_SESSION_BYTE_BUDGET / 4
+        };
+        self.inner.sessions.evict_within(budget);
     }
 
     /// Stop all tasks (sign-out / app teardown). Snapshots stay readable.
@@ -964,6 +983,28 @@ impl Client {
         section_id: Option<&str>,
     ) -> Result<(), ClientError> {
         self.store().assign_section(chat_id, section_id)
+    }
+
+    /// Pin between neighbours (`None` at either end) — a drop into Pinned.
+    pub fn pin_session_at(
+        &self,
+        chat_id: &str,
+        after: Option<&str>,
+        before: Option<&str>,
+    ) -> Result<(), ClientError> {
+        self.store().pin_session_at(chat_id, after, before)
+    }
+
+    /// Move a chat into a section between its members (`None` anchors at
+    /// either end; `section_id: None` = back to Recent) — a drop there.
+    pub fn place_session(
+        &self,
+        chat_id: &str,
+        section_id: Option<&str>,
+        after: Option<&str>,
+        before: Option<&str>,
+    ) -> Result<(), ClientError> {
+        self.store().place_session(chat_id, section_id, after, before)
     }
 
     fn store(&self) -> &Arc<workspace::WorkspaceStore> {
@@ -1384,6 +1425,10 @@ pub(crate) fn engine_view(entry: &EngineEntry) -> EngineView {
         from_cache: entry.from_cache,
         diagnostics: entry.diagnostics.clone(),
         room: entry.paired.room.clone(),
+        // Refreshed with every publish; the link's 5 s probe publishes.
+        link_path: (entry.state == EngineState::Connected)
+            .then(|| entry.route.link_path())
+            .flatten(),
     }
 }
 

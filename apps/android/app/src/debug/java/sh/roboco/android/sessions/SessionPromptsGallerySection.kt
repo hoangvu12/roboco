@@ -119,6 +119,10 @@ private class LoggingRowActions(
         log("unarchive($chatId)")
         ok(onResult)
     }
+    override fun delete(chatId: String, onResult: (ActionOutcome) -> Unit) {
+        log("delete($chatId)")
+        ok(onResult)
+    }
 
     override fun move(chatId: String, toSection: String?, onResult: (ActionOutcome) -> Unit) {
         log("move($chatId, ${toSection ?: "null"})")

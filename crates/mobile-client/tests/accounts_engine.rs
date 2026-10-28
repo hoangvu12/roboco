@@ -399,3 +399,47 @@ async fn a_forced_list_through_a_frozen_link_hits_the_deadline() {
     })
     .await;
 }
+
+/// Wave-10 34 + 36 (upstream #966's `device_login_*` and the callback
+/// relay): a phone starts a computer's sign-in over the paired link.
+/// Claude's login is engine-served — a loopback PKCE listener on the
+/// computer, no CLI and no network until the browser lands — so the phone
+/// listens on that same port of its own loopback to relay the redirect.
+/// In a test the "phone" and the computer share one loopback, so the port
+/// is genuinely taken: the start answers with the busy-port message and
+/// cancels the sign-in on the computer (36's "a busy phone port shows the
+/// error"). Polling an unknown attempt says it expired; an agent Roboco
+/// doesn't sign in to is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_phone_starts_a_computers_sign_in_and_a_busy_port_says_so() {
+    with_env_lock(async {
+        let rig = AccountsRig::start().await;
+        match rig
+            .client
+            .start_agent_login(&rig.device_id, "claude-code", None)
+            .await
+        {
+            Err(ClientError::HostError { message }) => {
+                assert!(
+                    message.starts_with("Port ") && message.contains("is in use on this phone"),
+                    "the busy-port message: {message}"
+                );
+            }
+            other => panic!("the shared loopback port is busy: {other:?}"),
+        }
+        match rig.client.poll_agent_login(&rig.device_id, "no-such-login").await {
+            Err(ClientError::HostError { message }) => {
+                assert!(message.contains("expired"), "{message}");
+            }
+            other => panic!("an unknown attempt has expired: {other:?}"),
+        }
+        assert!(
+            rig.client
+                .start_agent_login(&rig.device_id, "mock", None)
+                .await
+                .is_err()
+        );
+        rig.client.shutdown();
+    })
+    .await;
+}

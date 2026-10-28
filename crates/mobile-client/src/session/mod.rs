@@ -208,6 +208,60 @@ use crate::{Client, ClientInner};
 /// Detached sessions that stay subscribed; the least recently used beyond
 /// this are evicted.
 pub const WARM_SESSION_CAP: usize = 6;
+
+/// Estimated resident bytes all open sessions may hold before the least
+/// recently used detached, quiet ones are evicted, whatever the count
+/// (wave-10 43, open upstream PR #626 at `86952e4d`): the count cap alone
+/// lets six long transcripts sit resident on a phone. #626's 32 MB — typical
+/// chats (a few hundred KB) still reach the count cap; only outsized ones
+/// push each other out.
+pub const WARM_SESSION_BYTE_BUDGET: usize = 32 * 1024 * 1024;
+
+/// Resident bytes per serialized transcript byte: the entries' `String`s
+/// and part structs, their `Arc`s and the snapshot clones the UI holds run
+/// above the wire size. A rough multiplier — the budget is a safety
+/// ceiling; the count cap does the day-to-day work (#626's
+/// `RESIDENT_BYTES_PER_SNAPSHOT_BYTE` spirit, adapted: Roboco keeps no Loro
+/// doc on the phone).
+pub const RESIDENT_BYTES_PER_TRANSCRIPT_BYTE: usize = 2;
+
+/// Floor per open session (its tasks, the subscription, the composer)
+/// regardless of transcript size — #626's `DOC_RESIDENT_FLOOR_BYTES`.
+pub const SESSION_RESIDENT_FLOOR_BYTES: usize = 512 * 1024;
+
+/// Rough resident cost of a session whose transcript serializes to
+/// `transcript_bytes`.
+pub fn resident_estimate(transcript_bytes: usize) -> usize {
+    (transcript_bytes * RESIDENT_BYTES_PER_TRANSCRIPT_BYTE).max(SESSION_RESIDENT_FLOOR_BYTES)
+}
+
+/// Which detached, quiet sessions (`(touched_ms, chat_id, estimated
+/// bytes)`) to evict, least recently used first, until at most `count_cap`
+/// remain and the total (`pinned_bytes` of the sessions that can't be
+/// evicted, plus the rest) fits `byte_budget`. The most recently used one
+/// is never picked: it is the session just opened (not attached yet) or
+/// just closed — evicting it would drop the one the user is heading into
+/// (#626's `plan_evictions`, verbatim in behaviour).
+pub(crate) fn plan_evictions(
+    mut idle: Vec<(i64, String, usize)>,
+    pinned_bytes: usize,
+    count_cap: usize,
+    byte_budget: usize,
+) -> Vec<String> {
+    idle.sort();
+    let mut count = idle.len();
+    let mut total = pinned_bytes + idle.iter().map(|(_, _, bytes)| bytes).sum::<usize>();
+    let mut victims = Vec::new();
+    for (_, chat_id, bytes) in idle.iter().take(idle.len().saturating_sub(1)) {
+        if count <= count_cap && total <= byte_budget {
+            break;
+        }
+        victims.push(chat_id.clone());
+        count -= 1;
+        total -= bytes;
+    }
+    victims
+}
 /// Sessions `preload_sessions` opens in front-page order.
 pub const PRELOAD_CAP: usize = 4;
 
@@ -304,6 +358,10 @@ pub(crate) struct SessionCore {
     pub(crate) wake: Notify,
     view_attached: AtomicBool,
     touched_ms: std::sync::atomic::AtomicI64,
+    /// `(transcript revision, serialized bytes)` behind
+    /// [`Self::resident_estimate`]: sizing serializes the transcript, so
+    /// redo it only once it changed.
+    size_cache: Mutex<Option<(u64, usize)>>,
     /// Cancels this session's tasks (eviction, shutdown); replaced when an
     /// evicted-but-held session revives.
     tasks: Mutex<CancellationToken>,
@@ -376,6 +434,7 @@ impl SessionCore {
             wake: Notify::new(),
             view_attached: AtomicBool::new(false),
             touched_ms: std::sync::atomic::AtomicI64::new(crate::engines::now_ms()),
+            size_cache: Mutex::new(None),
             tasks: Mutex::new(tasks),
             subscription_live: AtomicBool::new(false),
             transcript_task: Mutex::new(None),
@@ -464,6 +523,29 @@ impl SessionCore {
 
     pub(crate) fn touched_ms(&self) -> i64 {
         self.touched_ms.load(Ordering::Acquire)
+    }
+
+    /// Rough resident bytes of this session, for the warm-set budget
+    /// (wave-10 43): the serialized transcript (cached per transcript
+    /// revision) through [`resident_estimate`].
+    pub(crate) fn resident_estimate(&self) -> usize {
+        let (revision, entries) = {
+            let state = lock(&self.state);
+            (state.transcript_revision, state.entries.clone())
+        };
+        let mut cache = lock(&self.size_cache);
+        let bytes = match *cache {
+            Some((cached, bytes)) if cached == revision => bytes,
+            _ => {
+                let bytes: usize = entries
+                    .iter()
+                    .map(|entry| serde_json::to_vec(entry.as_ref()).map_or(0, |v| v.len()))
+                    .sum();
+                *cache = Some((revision, bytes));
+                bytes
+            }
+        };
+        resident_estimate(bytes)
     }
 
     pub(crate) fn has_pending_sends(&self) -> bool {
@@ -1130,30 +1212,47 @@ impl SessionRegistry {
         core
     }
 
-    /// Drop the least recently used detached, quiet sessions past the cap.
-    /// A session is never evicted while view-attached, while its tail is
-    /// streaming, or while it has pending sends.
+    /// Drop the least recently used detached, quiet sessions past the count
+    /// cap or the byte budget. A session is never evicted while
+    /// view-attached (the open session, the tablet's shown one), while its
+    /// tail is streaming, or while it has pending sends.
     pub(crate) fn evict(&self) {
+        self.evict_within(WARM_SESSION_BYTE_BUDGET);
+    }
+
+    /// [`Self::evict`] against `byte_budget` (the app's memory-trim hook
+    /// passes a smaller one).
+    pub(crate) fn evict_within(&self, byte_budget: usize) {
+        let evictable = |core: &SessionCore| {
+            !core.view_attached() && !core.has_pending_sends() && !core.snapshot().streaming
+        };
+        // Sized outside the registry lock: an estimate serializes the
+        // transcript.
+        let cores: Vec<Arc<SessionCore>> = lock(&self.inner).sessions.values().cloned().collect();
+        let mut idle = Vec::new();
+        let mut pinned_bytes = 0;
+        for core in &cores {
+            let bytes = core.resident_estimate();
+            if evictable(core) {
+                idle.push((core.touched_ms(), core.chat_id.clone(), bytes));
+            } else {
+                pinned_bytes += bytes;
+            }
+        }
+        let victims = plan_evictions(idle, pinned_bytes, WARM_SESSION_CAP, byte_budget);
+        if victims.is_empty() {
+            return;
+        }
         let evicted: Vec<Arc<SessionCore>> = {
             let mut registry = lock(&self.inner);
-            let mut idle: Vec<(i64, String)> = registry
-                .sessions
-                .values()
-                .filter(|core| {
-                    !core.view_attached()
-                        && !core.has_pending_sends()
-                        && !core.snapshot().streaming
+            victims
+                .iter()
+                .filter_map(|id| {
+                    // Re-checked under the lock: a view may have attached
+                    // since the plan was made.
+                    let still_idle = registry.sessions.get(id).is_some_and(|core| evictable(core));
+                    if still_idle { registry.sessions.remove(id) } else { None }
                 })
-                .map(|core| (core.touched_ms(), core.chat_id.clone()))
-                .collect();
-            if idle.len() <= WARM_SESSION_CAP {
-                return;
-            }
-            idle.sort();
-            let excess = idle.len() - WARM_SESSION_CAP;
-            idle.into_iter()
-                .take(excess)
-                .filter_map(|(_, chat_id)| registry.sessions.remove(&chat_id))
                 .collect()
         };
         // Off the registry lock (the store is last in the lock order):
@@ -1756,6 +1855,59 @@ pub(crate) mod testkit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── wave-10 43: the warm set's byte budget (#626's plan cases) ─────────
+
+    const MB: usize = 1024 * 1024;
+
+    fn plan(idle: &[(i64, &str, usize)], pinned: usize, cap: usize, budget: usize) -> Vec<String> {
+        let idle = idle
+            .iter()
+            .map(|(at, id, bytes)| (*at, (*id).to_owned(), *bytes))
+            .collect();
+        plan_evictions(idle, pinned, cap, budget)
+    }
+
+    #[test]
+    fn small_sessions_fill_the_count_cap_and_no_more() {
+        let floor = resident_estimate(0);
+        assert_eq!(floor, SESSION_RESIDENT_FLOOR_BYTES);
+        let ids = ["c0", "c1", "c2", "c3", "c4", "c5", "c6"];
+        let idle: Vec<_> = ids.iter().enumerate().map(|(at, id)| (at as i64, *id, floor)).collect();
+        assert!(plan(&idle[..6], 0, WARM_SESSION_CAP, WARM_SESSION_BYTE_BUDGET).is_empty());
+        assert_eq!(plan(&idle, 0, WARM_SESSION_CAP, WARM_SESSION_BYTE_BUDGET), ["c0"]);
+    }
+
+    #[test]
+    fn big_sessions_evict_below_the_count_cap() {
+        let idle = [(1, "big-old", 30 * MB), (2, "small", MB), (3, "big-new", 30 * MB)];
+        assert_eq!(plan(&idle, 0, 6, 32 * MB), ["big-old"]);
+    }
+
+    #[test]
+    fn eviction_stops_once_under_budget() {
+        let idle = [(1, "a", 10 * MB), (2, "b", 10 * MB), (3, "c", 10 * MB), (4, "d", 10 * MB)];
+        assert_eq!(plan(&idle, 0, 6, 25 * MB), ["a", "b"]);
+    }
+
+    #[test]
+    fn sessions_that_cannot_be_evicted_still_count() {
+        let idle = [(1, "a", 2 * MB), (2, "b", 2 * MB), (3, "c", 2 * MB)];
+        assert_eq!(plan(&idle, 30 * MB, 6, 35 * MB), ["a"]);
+    }
+
+    #[test]
+    fn the_most_recent_session_is_never_picked() {
+        let idle = [(1, "old", MB), (2, "new", 100 * MB)];
+        assert_eq!(plan(&idle, 0, 6, 32 * MB), ["old"]);
+        assert!(plan(&idle[1..], 0, 6, 32 * MB).is_empty());
+    }
+
+    #[test]
+    fn the_estimate_scales_the_transcript_past_the_floor() {
+        assert_eq!(resident_estimate(MB), 2 * MB);
+        assert_eq!(resident_estimate(1), SESSION_RESIDENT_FLOOR_BYTES);
+    }
 
     /// One assistant entry carrying the given tool parts.
     fn entry(parts: Vec<roboco_doc::MessagePart>) -> Arc<SessionMessageEntry> {

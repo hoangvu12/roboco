@@ -115,6 +115,9 @@ fun SessionMenuGallerySection() {
             override fun unarchive(chatId: String, onResult: (ActionOutcome) -> Unit) {
                 onResult(ActionOutcome.Ok)
             }
+            override fun delete(chatId: String, onResult: (ActionOutcome) -> Unit) {
+                onResult(ActionOutcome.Ok)
+            }
 
             override fun move(chatId: String, toSection: String?, onResult: (ActionOutcome) -> Unit) {}
             override fun movePin(chatId: String, after: String?, before: String?, onResult: (ActionOutcome) -> Unit) {}

@@ -209,6 +209,19 @@ async fn a_tailcat_engine_pairs_and_reconnects_from_its_stored_record() {
     })
     .await;
     assert_eq!(view.transport, TransportKind::Tailcat);
+    // fleet-redesign 16: the library's first path ping lands in the view
+    // (the link's probe republishes it), and its label names only the path
+    // kind, a relay region and a latency, never the address.
+    let view = wait_for(&client, &record.engine_id, "a measured path", |view| {
+        view.link_path.is_some()
+    })
+    .await;
+    let label = view.link_path.unwrap().label();
+    assert!(
+        label.starts_with("Direct · ") || label.starts_with("Via relay"),
+        "{label}"
+    );
+    assert!(!label.contains(&address) && !label.contains("127.0.0.1"), "{label}");
     client.shutdown();
 
     // 2. A restarted app holds only the stored record: it reconnects over

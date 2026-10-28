@@ -15,6 +15,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.longClick
@@ -23,6 +26,7 @@ import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
@@ -164,51 +168,62 @@ class SessionFlowTest {
         FlowSemantics.saveScreenshot("front-page-folder.png")
     }
 
-    /** `testTabsAndSearch` (:235): the Settings tab round-trip. */
+    /**
+     * `testSettingsFromBottomBar` (upstream #967): the one-row bar's gear
+     * pushes Settings over the list, the bar steps aside (no New session
+     * over Settings), and back brings the list and the bar back.
+     */
     @Test
-    fun tabsAndSearch() {
+    fun settingsFromBottomBar() {
         compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText("Sessions").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("bottom-settings").fetchSemanticsNodes().isNotEmpty()
         }
-        // The tab cells expose their title as merged Text plus the
-        // `tab-<identifier>` tag (GlassTabBar), never a content description —
-        // the old `onAllNodesWithContentDescription("Settings")[0]` matched
-        // nothing ("Failed to inject touch input", run 38531061823).
-        compose.onNodeWithTag("tab-more").performClick()
+        FlowSemantics.saveScreenshot("bottom-bar.png")
+        compose.onNodeWithTag("bottom-settings").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithText("Settings").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("settings-screen").fetchSemanticsNodes().isNotEmpty()
         }
-        FlowSemantics.saveScreenshot("settings-tab.png")
-        compose.onNodeWithTag("tab-sessions").performClick()
-        compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithText("Sessions").fetchSemanticsNodes().isNotEmpty()
-        }
+        // The bar stays composed when hidden (#30), so "gone" is "not
+        // displayed", not "not in the tree".
+        val accessories = compose.onAllNodesWithTag("new-session")
+        fun barShown() = (0 until accessories.fetchSemanticsNodes().size).any { accessories[it].isDisplayed() }
+        compose.waitUntil(timeoutMillis = 5_000) { !barShown() }
+        FlowSemantics.saveScreenshot("settings.png")
+        device.pressBack()
+        compose.waitUntil(timeoutMillis = 5_000) { barShown() }
+        compose.onNodeWithTag("bottom-settings").assertExists()
     }
 
     /**
-     * `testSearchTabRoundTrip` (:143): Search → back to Sessions /
-     * Settings — the accessory must be back and usable after the close.
+     * `testBottomBarSearch` (upstream #967): the bar's field filters the
+     * Sessions list in place; clearing it brings the list (and New
+     * session) back.
      */
     @Test
-    fun searchTabRoundTrip() {
+    fun bottomBarSearch() {
         compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText("Sessions").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-veil")).fetchSemanticsNodes().isNotEmpty()
         }
-        // The tabs by their `tab-<identifier>` tags (see tabsAndSearch).
-        for (back in listOf("tab-sessions", "tab-more")) {
-            compose.onNodeWithTag(back).performClick()
-            compose.waitForIdle()
-            compose.onAllNodesWithContentDescription("Search")[0].performClick()
-            compose.waitUntil(timeoutMillis = 5_000) {
-                compose.onAllNodesWithTag("search-field").fetchSemanticsNodes().isNotEmpty()
-            }
-            // Close beside the field leaves search for the tab you came from.
-            compose.onNodeWithTag("search-close").performClick()
-            compose.waitUntil(timeoutMillis = 5_000) {
-                compose.onAllNodesWithTag("new-session").fetchSemanticsNodes().isNotEmpty()
-            }
-            compose.onAllNodesWithTag("new-session")[0].assertExists()
+        compose.onNodeWithTag("search-field").performClick().performTextInput("wrangler")
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-veil")).fetchSemanticsNodes().isEmpty()
         }
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-deploy")).fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("bottom-bar-search.png")
+        compose.onNodeWithTag("search-clear", useUnmergedTree = true).performClick()
+        // The field's own Search key lets go of it and hides the IME. A
+        // back press here was lost on the CI emulator while the list
+        // re-laid out (PR #38: no IME hide followed it).
+        if (imeVisible()) {
+            compose.onNodeWithTag("search-field").performImeAction()
+            compose.waitUntil(timeoutMillis = 10_000) { !imeVisible() }
+        }
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-veil")).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("new-session").assertExists()
     }
 
     /** `testPullToRefreshEnds` (:671): the list settles back within 4 dp. */
@@ -636,6 +651,98 @@ class SessionFlowTest {
         }
     }
 
+    /**
+     * `testSessionMenuHeaderAndDelete` (upstream #967): the list's
+     * long-press menu deletes after "Delete session?" (Cancel keeps the
+     * row); the session's ⋯ menu is headed by its title and deletes too,
+     * back on the list without the row. Runs on `chat-home` — no other
+     * flow test reads it, and the fixture engine lives for the whole run.
+     */
+    @Test
+    fun sessionMenuHeaderAndDelete() {
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-home")).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNode(FlowSemantics.sessionRow("chat-home")).performTouchInput { longClick() }
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("row-menu-delete").fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("list-menu-delete.png")
+        compose.onNodeWithTag("row-menu-delete").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithText("Delete session?").fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("delete-confirm.png")
+        compose.onNodeWithTag("alert-cancel").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithText("Delete session?").fetchSemanticsNodes().isEmpty()
+        }
+        assertTrue(
+            "cancel keeps the session",
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-home")).fetchSemanticsNodes().isNotEmpty(),
+        )
+
+        compose.onNode(FlowSemantics.sessionRow("chat-home")).performClick()
+        compose.waitUntil(timeoutMillis = 20_000) {
+            compose.onAllNodesWithTag("session-more").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("session-more").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("session-menu-delete").fetchSemanticsNodes().isNotEmpty()
+        }
+        // The title heads the menu (the header line inside the panel).
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodes(
+                hasText("Clean up ~/Downloads", substring = true) and hasAnyAncestor(hasTestTag("glass-menu")),
+                useUnmergedTree = true,
+            ).fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("session-menu.png")
+        compose.onNodeWithTag("session-menu-delete").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("alert-primary").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("alert-primary").performClick()
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("session-more").fetchSemanticsNodes().isEmpty()
+        }
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-home")).fetchSemanticsNodes().isEmpty()
+        }
+    }
+
+    /**
+     * Wave-10 35 (upstream #967's error card): a run refused as signed out
+     * shows the red card with "Log in"; the tap opens the chat's agent on
+     * Accounts & Usage. The mock agent's `/error <message>` prompt fails
+     * the run with that message. Runs on `chat-preview` (its preview test
+     * only reads the composer and the ⋯ menu). The mock harness signs in
+     * to nothing, so no login starts here — `AccountSignInTest` covers the
+     * start.
+     */
+    @Test
+    fun errorCardLogInOpensTheAgentsAccounts() {
+        compose.waitUntil(timeoutMillis = 20_000) {
+            compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("composer-input").performClick().performTextInput("/error Not logged in")
+        compose.onNodeWithTag("composer-send").performClick()
+        compose.waitUntil(timeoutMillis = 30_000) {
+            compose.onAllNodesWithTag("transcript-action-sign-in", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("error-card.png")
+        if (imeVisible()) {
+            device.pressBack()
+            compose.waitUntil(timeoutMillis = 3_000) { !imeVisible() }
+        }
+        compose.onAllNodesWithTag("transcript-action-sign-in", useUnmergedTree = true)[0].performClick()
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("agent-accounts").fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("error-card-accounts.png")
+    }
+
     /** `testToolGroupExpandsAndShowsDetail` (:344): the disclosure and the inline detail. */
     @Test
     fun toolGroupExpandsAndShowsDetail() {
@@ -741,11 +848,20 @@ class SessionFlowTest {
             compose.onAllNodesWithTag("composer-chip-model").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("composer-chip-model").performClick()
-        // The mock engine's models (Mock 1 / Fable 5).
+        // Wave-10 38: the tabbed picker sheet (upstream #966), the mock
+        // engine's models (Mock 1 / Fable 5) on the chat's provider page.
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("model-picker").fetchSemanticsNodes().isNotEmpty()
+        }
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithText("Mock 1").fetchSemanticsNodes().isNotEmpty()
         }
+        FlowSemantics.saveScreenshot("model-picker.png")
         compose.onAllNodesWithText("Mock 1")[0].performClick()
+        // The pick lands, then the sheet closes itself.
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("model-picker").fetchSemanticsNodes().isEmpty()
+        }
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }
@@ -1115,11 +1231,13 @@ class SessionFlowTest {
     /** The `route` extra per test method (§6: chat:<id> | new | more | search). */
     private fun routeFor(name: String): String? = when {
         name.startsWith("frontPage") ||
-            name.startsWith("tabsAndSearch") ||
-            name.startsWith("searchTab") ||
+            name.startsWith("settingsFromBottomBar") ||
+            name.startsWith("bottomBarSearch") ||
             name.startsWith("pullToRefresh") ||
             name.startsWith("archiveWithUndo") ||
+            name.startsWith("sessionMenuHeaderAndDelete") ||
             name.startsWith("newSessionFromAccessory") -> null
+        name.startsWith("errorCardLogIn") -> "chat:chat-preview"
         name.startsWith("questionPanel") -> "chat:chat-ask"
         name.startsWith("sendGlides") -> "chat:chat-runway"
         name.startsWith("toolGroupsRender") -> "chat:chat-veil"

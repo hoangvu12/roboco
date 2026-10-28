@@ -1899,9 +1899,10 @@ impl AgentAccounts {
     /// [`Self::start_login_with`] on behalf of `requester` — another device,
     /// whose browser finishes the sign-in. The login's loopback callback
     /// port is published for that device alone, for as long as the login
-    /// runs. Roboco never names a requester in production (the engine-to-
-    /// engine forward that stamps it upstream is not ported); the surface
-    /// stays for a local transport (ADR 0004).
+    /// runs. Wave-10 36: a phone (or a desktop managing this engine) names a
+    /// fresh random requester per sign-in and relays the browser callback
+    /// with it ([`Self::relay_callback`]); the engine-to-engine forward that
+    /// stamps it upstream stays unported (ADR 0004).
     pub async fn start_login_for(
         &self,
         harness: HarnessId,
@@ -1959,6 +1960,73 @@ impl AgentAccounts {
                 .register(&start.login_id, port, requester, FLOW_TTL);
         }
         Ok(start)
+    }
+
+    /// Replay a sign-in's browser callback that the requesting device caught
+    /// on its own loopback (wave-10 36, upstream #966's `relay_callback`):
+    /// one GET of `path` to the port this login registered for `requester`
+    /// — **only** a live login started for that requester, **only** that
+    /// port, **only** a plain path + query (no scheme, no host, no
+    /// protocol-relative `//`, no whitespace or control characters, ≤ 8 KiB).
+    /// The CLI (or engine) listening there finishes the login as if the
+    /// browser had landed on this computer. Nothing else on this machine is
+    /// reachable through it.
+    pub async fn relay_callback(
+        &self,
+        login_id: &str,
+        requester: &str,
+        path: &str,
+    ) -> Result<roboco_proto::RelayedLoginCallback, EngineError> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        if !relayable_callback_path(path) {
+            return Err(EngineError::Other("not a sign-in callback path".into()));
+        }
+        let port = self
+            .inner
+            .callback_routes
+            .port_for(login_id, requester)
+            .map_err(|e| EngineError::Other(e.to_string()))?;
+        let connect = async {
+            match tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await {
+                Ok(socket) => Ok(socket),
+                Err(v4) => tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port))
+                    .await
+                    .map_err(|_| v4),
+            }
+        };
+        let exchange = async {
+            let mut socket = connect.await?;
+            let request = format!(
+                "GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(request.as_bytes()).await?;
+            let mut response = Vec::new();
+            let mut buf = [0u8; 4096];
+            while response.len() < 64 * 1024 {
+                let read = socket.read(&mut buf).await?;
+                if read == 0 {
+                    break;
+                }
+                response.extend_from_slice(&buf[..read]);
+                if response.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            Ok::<_, std::io::Error>(response)
+        };
+        let response = tokio::time::timeout(Duration::from_secs(20), exchange)
+            .await
+            .map_err(|_| EngineError::Other("the sign-in didn't answer its callback".into()))?
+            .map_err(|e| EngineError::Other(format!("couldn't reach the sign-in: {e}")))?;
+        let head = String::from_utf8_lossy(&response);
+        let status = head
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|code| code.parse::<u16>().ok())
+            .unwrap_or(0);
+        // The status only: a success redirect's Location can carry tokens.
+        Ok(roboco_proto::RelayedLoginCallback { status })
     }
 
     /// Claude: the CLI's own automatic login — PKCE against a loopback
@@ -4774,6 +4842,16 @@ fn pkce_pair() -> (String, String) {
     (verifier, challenge)
 }
 
+/// Whether `path` is a request target a relayed sign-in callback may carry
+/// (wave-10 36): a plain `/path?query`, never a URL, a protocol-relative
+/// `//host`, whitespace, control characters or more than 8 KiB.
+pub(crate) fn relayable_callback_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.starts_with("//")
+        && path.len() <= 8 * 1024
+        && !path.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
 /// The loopback port an authorize url's `redirect_uri` lands on — where the
 /// login's CLI (or our own listener) waits for the browser. `None` for flows
 /// that don't redirect to this machine.
@@ -5929,6 +6007,66 @@ mod login_tests {
         assert!(!tunnel_port_allowed(1455, None));
         let privileged = "https://x/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A80%2Fcb";
         assert!(!tunnel_port_allowed(80, Some(privileged)));
+    }
+
+    #[test]
+    fn only_a_plain_path_is_relayable() {
+        assert!(relayable_callback_path("/callback?code=abc&state=xyz"));
+        assert!(relayable_callback_path("/auth/callback"));
+        assert!(!relayable_callback_path("http://localhost:1455/auth/callback"));
+        assert!(!relayable_callback_path("//evil.example/x"));
+        assert!(!relayable_callback_path("callback"));
+        assert!(!relayable_callback_path("/a b"));
+        assert!(!relayable_callback_path("/a\r\nHost: evil"));
+        assert!(!relayable_callback_path(&format!("/{}", "a".repeat(8 * 1024))));
+    }
+
+    /// Wave-10 36: the relay reaches only a live login started for this
+    /// requester, on its registered port, with a plain path — and replays
+    /// it as one GET whose status (never its Location) comes back.
+    #[tokio::test]
+    async fn the_callback_relay_reaches_only_the_requesters_live_login() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let tmp = tempfile::tempdir().unwrap();
+        let routes = roboco_preview::login::CallbackRoutes::default();
+        let accounts = AgentAccounts::with_callback_routes(config(tmp.path()), routes.clone());
+        // A fake CLI listener standing in for the login's loopback callback.
+        let cli = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = cli.local_addr().unwrap().port();
+        let seen = tokio::spawn(async move {
+            let (mut socket, _) = cli.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = socket.read(&mut buf).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 302 Found\r\nLocation: https://example.com/done\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        });
+        routes.register("login-1", port, "phone-nonce", Duration::from_secs(60));
+
+        // Refused: another requester, an unknown login, an absolute URL.
+        assert!(accounts.relay_callback("login-1", "someone-else", "/cb?code=1").await.is_err());
+        assert!(accounts.relay_callback("login-2", "phone-nonce", "/cb?code=1").await.is_err());
+        assert!(
+            accounts
+                .relay_callback("login-1", "phone-nonce", "http://localhost:22/")
+                .await
+                .is_err()
+        );
+
+        let relayed = accounts
+            .relay_callback("login-1", "phone-nonce", "/cb?code=1&state=s")
+            .await
+            .unwrap();
+        assert_eq!(relayed, roboco_proto::RelayedLoginCallback { status: 302 }, "the status, never the Location");
+        let request = seen.await.unwrap();
+        assert!(request.starts_with("GET /cb?code=1&state=s HTTP/1.1\r\n"), "{request}");
+        assert!(request.contains(&format!("Host: localhost:{port}")));
+
+        // Once the login ends its route is gone.
+        routes.remove("login-1");
+        assert!(accounts.relay_callback("login-1", "phone-nonce", "/cb").await.is_err());
     }
 
     #[tokio::test]

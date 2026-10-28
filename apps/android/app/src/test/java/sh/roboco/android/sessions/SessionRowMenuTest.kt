@@ -52,6 +52,10 @@ class SessionRowMenuTest {
             calls += "rename ${row.id}"
         }
 
+        override fun deleteSession(row: SessionRow) {
+            calls += "delete ${row.id}"
+        }
+
         override fun newSection(engineId: String?) {
             calls += "newSection ${engineId ?: "-"}"
         }
@@ -77,6 +81,10 @@ class SessionRowMenuTest {
 
         override fun unarchive(chatId: String, onResult: (ActionOutcome) -> Unit) {
             calls += "unarchive $chatId"
+            onResult(ActionOutcome.Ok)
+        }
+        override fun delete(chatId: String, onResult: (ActionOutcome) -> Unit) {
+            calls += "delete $chatId"
             onResult(ActionOutcome.Ok)
         }
 
@@ -135,6 +143,10 @@ class SessionRowMenuTest {
         }
 
         override fun confirmDeleteSection(sectionId: String, name: String, onDeleted: () -> Unit) {}
+
+        override fun confirmDeleteSession(chatId: String, title: String, onDeleted: () -> Unit) {
+            calls += "confirmDeleteSession $chatId $title"
+        }
     }
 
     // ---------------------------------------------------------- the fixture
@@ -150,6 +162,7 @@ class SessionRowMenuTest {
             R.string.menu_no_section -> "No Section"
             R.string.menu_new_section -> "New Section…"
             R.string.menu_rename -> "Rename…"
+            R.string.menu_delete -> "Delete"
             else -> "string $id"
         }
     }
@@ -206,11 +219,11 @@ class SessionRowMenuTest {
     // ------------------------------------------------------------ the menu
 
     @Test
-    fun theNormalMenuIsPinMoveRenameArchive() {
+    fun theNormalMenuIsPinMoveRenameArchiveDelete() {
         val menu = menu(row("c1"), RecordingCommands())
         assertNull(menu.title)
         val children = menu.children
-        assertEquals(4, children.size)
+        assertEquals(5, children.size)
 
         val pin = children[0] as MenuItem
         assertEquals("Pin", pin.title)
@@ -232,8 +245,14 @@ class SessionRowMenuTest {
         val archive = children[3] as MenuItem
         assertEquals("Archive", archive.title)
         assertEquals(MenuIcon.Symbol(RobocoIcons.Archivebox), archive.icon)
-        assertTrue(archive.destructive)
+        assertFalse("upstream #967: Archive is no longer destructive", archive.destructive)
         assertEquals("row-menu-archive", archive.testTag)
+
+        val delete = children[4] as MenuItem
+        assertEquals("Delete", delete.title)
+        assertEquals(MenuIcon.Symbol(RobocoIcons.Trash), delete.icon)
+        assertTrue(delete.destructive)
+        assertEquals("row-menu-delete", delete.testTag)
     }
 
     @Test
@@ -271,9 +290,9 @@ class SessionRowMenuTest {
     }
 
     @Test
-    fun theArchivedMenuIsUnarchiveAndRenameOnly() {
+    fun theArchivedMenuIsUnarchiveRenameAndDelete() {
         val menu = menu(row("c1"), RecordingCommands(), archived = true)
-        assertEquals(2, menu.children.size)
+        assertEquals(3, menu.children.size)
         val unarchive = menu.children[0] as MenuItem
         assertEquals("Unarchive", unarchive.title)
         assertEquals(MenuIcon.Symbol(RobocoIcons.TrayAndArrowUp), unarchive.icon)
@@ -282,6 +301,9 @@ class SessionRowMenuTest {
         val rename = menu.children[1] as MenuItem
         assertEquals("Rename…", rename.title)
         assertEquals("row-menu-rename", rename.testTag)
+        val delete = menu.children[2] as MenuItem
+        assertEquals("row-menu-delete", delete.testTag)
+        assertTrue(delete.destructive)
     }
 
     @Test
@@ -295,6 +317,7 @@ class SessionRowMenuTest {
         (move.children[2] as MenuItem).action() // No Section
         (menu.children[2] as MenuItem).action() // Rename…
         (menu.children[3] as MenuItem).action() // Archive
+        (menu.children[4] as MenuItem).action() // Delete (the confirm)
         assertEquals(
             listOf(
                 "setPinned c9 true",
@@ -303,6 +326,7 @@ class SessionRowMenuTest {
                 "move c9 -",
                 "rename c9",
                 "archive c9",
+                "delete c9",
             ),
             cmd.calls,
         )
@@ -370,6 +394,7 @@ class SessionRowMenuTest {
         cmd.moveToSectionSheet(r)
         cmd.renameSession(r)
         cmd.newSection("eng-A")
+        cmd.deleteSession(r)
         cmd.archive("c1") {}
 
         assertEquals(
@@ -383,9 +408,25 @@ class SessionRowMenuTest {
             actions.calls,
         )
         assertEquals(
-            listOf("moveToSection c1", "renameSession c1", "newSection eng-A"),
+            listOf(
+                "moveToSection c1",
+                "renameSession c1",
+                "newSection eng-A",
+                "confirmDeleteSession c1 Rename me",
+            ),
             prompts.calls,
         )
         assertEquals(listOf(section("s1", "Work")), cmd.sectionsFor("eng-A"))
+    }
+
+    /** Wave-10 33: a confirmed row delete tells the router (the tablet leaves the open session). */
+    @Test
+    fun aConfirmedDeleteReachesTheRouterHook() {
+        val deleted = mutableListOf<String>()
+        val prompts = object : SessionPrompts by FakePrompts() {
+            override fun confirmDeleteSession(chatId: String, title: String, onDeleted: () -> Unit) = onDeleted()
+        }
+        SessionRowCommands(FakeRowActions(), prompts) { deleted += it }.deleteSession(row("c1"))
+        assertEquals(listOf("c1"), deleted)
     }
 }

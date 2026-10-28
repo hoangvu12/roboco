@@ -232,7 +232,10 @@ interface GlassSheetScope {
  * Haze (ticket 07's rule: glass never sits inside the node that carries
  * `hazeSource`): the content slot is the sheet's own `hazeSource`, and the
  * header's glass circles are drawn as **siblings after it**, so they
- * sample the sheet fill/content instead of falling back.
+ * sample the sheet fill/content instead of falling back. [glass] is the
+ * same rule for a sheet whose own header lives in its content (wave-10 38's
+ * model picker): glass controls laid over the whole sheet, after the
+ * source, placed by the caller, without the header's content inset.
  *
  * Reduced motion: no special case — iOS does not change sheet presentation
  * under Reduce Motion (android-app#14:584 "everything else keeps
@@ -250,6 +253,7 @@ fun GlassSheet(
     scrim: Boolean = true,
     title: String? = null,
     header: (@Composable GlassSheetScope.() -> Unit)? = null,
+    glass: (@Composable GlassSheetScope.() -> Unit)? = null,
     content: @Composable GlassSheetScope.(bottomInset: Dp) -> Unit,
 ) {
     val palette = RobocoTheme.palette
@@ -456,6 +460,9 @@ fun GlassSheet(
                         Box(Modifier.fillMaxWidth().height(GlassSheetDefaults.HeaderHeight)) {
                             header(sheetScope)
                         }
+                    }
+                    if (glass != null) {
+                        Box(Modifier.fillMaxSize()) { glass(sheetScope) }
                     }
                     if (grabber) {
                         val twoDetents =

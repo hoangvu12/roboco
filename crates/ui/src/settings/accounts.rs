@@ -131,59 +131,50 @@ pub(crate) fn usage_resets(
         .join(" · ")
 }
 
-/// The provider cards, in display order: (harness, name, CLI command — named
-/// in the empty-state copy, roboco settings.agents.tsx `PROVIDERS`). Every
-/// agent with a login of its own is here; what each one supports is
-/// documented engine-side (`agent_accounts` module docs). Antigravity's
-/// command never prints in the copy — it has no CLI login (see the
-/// empty-state arm).
-pub const PROVIDERS: [(HarnessId, &str, &str); 9] = [
-    (HarnessId::ClaudeCode, "Claude Code", "claude"),
-    (HarnessId::Codex, "Codex", "codex"),
-    (HarnessId::Cursor, "Cursor", "cursor-agent"),
-    (HarnessId::Antigravity, "Antigravity", "Antigravity"),
-    (HarnessId::Grok, "Grok", "grok login"),
-    (HarnessId::Devin, "Devin", "devin auth login"),
-    (HarnessId::Opencode, "OpenCode", "opencode auth login"),
-    (HarnessId::Pi, "Pi", "pi"),
-    (HarnessId::Hermes, "Hermes", "hermes auth add"),
-];
-
-/// Whether `harness` has an Accounts section (and sign-in flow). Pure.
-pub fn signs_in(harness: HarnessId) -> bool {
-    PROVIDERS
-        .iter()
-        .any(|(provider, _, _)| *provider == harness)
+/// Wave-10 36: listen on this computer's loopback `port` for a remote
+/// engine's sign-in redirect and relay it there (`RelayAgentLoginCallback`
+/// with the login's random requester). `Err` is the "Port … is in use on
+/// this computer" message.
+async fn listen_for_remote_callback(
+    runtime: &tokio::runtime::Handle,
+    port: u16,
+    engine: roboco_engine_client::registry::EngineTarget,
+    login_id: String,
+    requester: String,
+) -> Result<roboco_engine_client::login_relay::LoginRelay, String> {
+    roboco_engine_client::login_relay::listen(
+        runtime,
+        port,
+        "computer",
+        Box::new(move |path| {
+            let (engine, login_id, requester) = (engine.clone(), login_id.clone(), requester.clone());
+            Box::pin(async move {
+                let params = serde_json::to_value(roboco_proto::RelayAgentLoginCallback {
+                    login_id,
+                    requester_device_id: requester,
+                    path,
+                })
+                .map_err(|e| e.to_string())?;
+                engine
+                    .call_as::<roboco_proto::RelayedLoginCallback>(
+                        methods::RELAY_AGENT_LOGIN_CALLBACK,
+                        params,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        }),
+    )
+    .await
 }
 
-/// Whether the provider reports plan usage. One that doesn't shows no meters
-/// and no "usage unavailable" note — there is nothing missing. Pure.
-pub fn reports_usage(harness: HarnessId) -> bool {
-    harness != HarnessId::Antigravity
-}
-
-/// Providers whose agent holds exactly ONE login (Antigravity): once it is
-/// connected there is nothing to add — signing in again only re-confirms it.
-pub fn keeps_one_login(harness: HarnessId) -> bool {
-    harness == HarnessId::Antigravity
-}
-
-/// Display name of one agent (upstream `provider_name`) — the fallback
-/// [`LoginOption`] label for single-login agents. Pure.
-pub(crate) fn provider_name(harness: HarnessId) -> &'static str {
-    match harness {
-        HarnessId::ClaudeCode => "Claude Code",
-        HarnessId::Codex => "Codex",
-        HarnessId::Cursor => "Cursor",
-        HarnessId::Antigravity => "Antigravity",
-        HarnessId::Grok => "Grok",
-        HarnessId::Devin => "Devin",
-        HarnessId::Opencode => "OpenCode",
-        HarnessId::Pi => "Pi",
-        HarnessId::Hermes => "Hermes",
-        _ => "Agent",
-    }
-}
+// The pure sign-in rules (which agents sign in, their login options,
+// switching) live in `roboco_proto::providers`, shared with the Android
+// core's `agent_login_rules` (upstream #966 moved them to proto too).
+pub use roboco_proto::providers::{
+    LoginOption, PROVIDERS, keeps_one_login, login_options, provider_name, provider_note,
+    reports_usage, signs_in, switches_accounts,
+};
 
 /// Accounts of one provider, in the engine's order (slot creation). No
 /// active-first re-sort: switching accounts must not move the switched-to
@@ -198,59 +189,6 @@ pub fn provider_accounts(
         .iter()
         .filter(|a| a.harness == harness)
         .collect()
-}
-
-/// Whether roboco switches this agent's logins. Hermes rotates through its
-/// own credential pool (listed, never reordered); Antigravity keeps one.
-pub fn switches_accounts(harness: HarnessId) -> bool {
-    !matches!(harness, HarnessId::Hermes | HarnessId::Antigravity)
-}
-
-/// A standing note under a provider's card, for an agent whose accounts work
-/// differently. Hermes owns its credential pool: roboco lists it and adds to
-/// it through Hermes' own CLI, but never switches or removes its entries.
-/// Pure.
-pub fn provider_note(harness: HarnessId) -> Option<&'static str> {
-    match harness {
-        HarnessId::Hermes => Some(
-            "Hermes manages its own credential pool and rotates through it. Accounts added \
-             here go through `hermes auth add`; remove one with `hermes auth remove`.",
-        ),
-        _ => None,
-    }
-}
-
-/// One way to add an account: agents that keep a login PER model provider
-/// (OpenCode, Pi, Hermes) sign in to a named provider; the rest have one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LoginOption {
-    /// The engine's `provider` param (`None` = the agent's only login).
-    pub provider: Option<&'static str>,
-    /// Who the user signs in to.
-    pub label: &'static str,
-}
-
-/// The sign-ins roboco offers for `harness`, in button order. Pure.
-pub fn login_options(harness: HarnessId) -> Vec<LoginOption> {
-    let option = |provider, label| LoginOption {
-        provider: Some(provider),
-        label,
-    };
-    match harness {
-        HarnessId::Opencode => vec![
-            option("openai", "ChatGPT"),
-            option("github-copilot", "GitHub Copilot"),
-        ],
-        HarnessId::Pi => vec![option("openai-codex", "ChatGPT")],
-        HarnessId::Hermes => vec![
-            option("openai-codex", "ChatGPT"),
-            option("nous", "Nous Portal"),
-        ],
-        _ => vec![LoginOption {
-            provider: None,
-            label: provider_name(harness),
-        }],
-    }
 }
 
 /// The add-account button's label for one [`LoginOption`]: a per-provider
@@ -551,6 +489,15 @@ pub struct AccountsPage {
     load_task: Option<Task<()>>,
     action_task: Option<Task<()>>,
     poll_task: Option<Task<()>>,
+    /// Wave-10 36: a loopback sign-in started on a remote (fleet) engine —
+    /// the listener on this computer's loopback relaying the browser's
+    /// redirect to that engine. Dropped with the login.
+    login_relay: Option<roboco_engine_client::login_relay::LoginRelay>,
+    /// The current login's random requester (a remote engine only), for a
+    /// loopback page that arrives with a poll (Antigravity).
+    login_requester: Option<String>,
+    /// The page a poll brought (opened once).
+    login_late_url: Option<String>,
     _observe: Subscription,
     _code_events: Subscription,
 }
@@ -578,6 +525,9 @@ impl AccountsPage {
             load_task: None,
             action_task: None,
             poll_task: None,
+            login_relay: None,
+            login_requester: None,
+            login_late_url: None,
             _observe: observe,
             _code_events: code_events,
         };
@@ -611,6 +561,7 @@ impl AccountsPage {
         // login/action state and reload with a forced usage probe (the new
         // device's cache is cold).
         self.login = None;
+        self.login_relay = None;
         self.busy_account = None;
         self.confirm_switch = None;
         self.error = None;
@@ -914,19 +865,81 @@ impl AccountsPage {
             return;
         };
         self.login = Some(LoginFlow::Starting { harness, provider });
+        self.login_relay = None;
         self.error = None;
+        // Wave-10 36: a login on another (fleet) engine redirects to THAT
+        // computer's loopback, but the browser runs here. Name a fresh
+        // random requester (only this page can relay the callback) and
+        // relay the redirect this computer's browser lands on.
+        let remote = {
+            let state = self.state.read(cx);
+            let local = state.local_target().ok().map(|target| target.key().clone());
+            local.as_ref() != Some(engine.key())
+        };
+        let requester = remote.then(|| uuid::Uuid::new_v4().to_string());
+        self.login_requester = requester.clone();
+        self.login_late_url = None;
+        let runtime = self.state.read(cx).registry().map(|registry| registry.runtime_handle());
         let mut params = serde_json::json!({ "harness": harness });
         if let (Some(provider), Some(object)) = (provider, params.as_object_mut()) {
             object.insert("provider".into(), serde_json::json!(provider));
         }
+        if let (Some(requester), Some(object)) = (&requester, params.as_object_mut()) {
+            object.insert("requesterDeviceId".into(), serde_json::json!(requester));
+        }
         let params = self.params(params);
+        let relay_engine = engine.clone();
         self.action_task = Some(cx.spawn(async move |this, cx| {
             let result = engine.call(methods::START_AGENT_LOGIN, params).await;
+            let result = result.and_then(|value| {
+                serde_json::from_value::<AgentLoginStart>(value)
+                    .map_err(|e| roboco_rpc::RpcError::Failed(e.to_string()))
+            });
+            // The relay listener, for a loopback login on a remote engine.
+            let relay = match (&result, requester, runtime) {
+                (Ok(start), Some(requester), Some(runtime))
+                    if start.mode == AgentLoginMode::Browser =>
+                {
+                    match start.callback_port {
+                        Some(port) => Some(
+                            listen_for_remote_callback(
+                                &runtime,
+                                port,
+                                relay_engine,
+                                start.login_id.clone(),
+                                requester,
+                            )
+                            .await,
+                        ),
+                        None => None,
+                    }
+                }
+                _ => None,
+            };
             this.update(cx, |page, cx| {
-                match result.and_then(|value| {
-                    serde_json::from_value::<AgentLoginStart>(value)
-                        .map_err(|e| roboco_rpc::RpcError::Failed(e.to_string()))
-                }) {
+                let result = match (result, relay) {
+                    (Ok(start), Some(Err(busy))) => {
+                        // This computer can't catch the redirect: end the
+                        // sign-in on the remote engine and say why.
+                        let params = page.params(serde_json::json!({ "loginId": start.login_id }));
+                        if let Ok(engine) = crate::request_routing::device_target(
+                            page.state.read(cx),
+                            page.target_device.as_deref(),
+                        ) {
+                            cx.spawn(async move |_, _| {
+                                let _ = engine.call(methods::CANCEL_AGENT_LOGIN, params).await;
+                            })
+                            .detach();
+                        }
+                        Err(roboco_rpc::RpcError::Failed(busy))
+                    }
+                    (Ok(start), Some(Ok(relay))) => {
+                        page.login_relay = Some(relay);
+                        Ok(start)
+                    }
+                    (result, _) => result,
+                };
+                match result {
                     Ok(start) => {
                         if !start.cli_opens_browser {
                             cx.open_url(&start.url);
@@ -957,6 +970,7 @@ impl AccountsPage {
                     }
                     Err(err) => {
                         page.login = None;
+                        page.login_relay = None;
                         page.error = Some(format!("Login failed to start: {err}").into());
                     }
                 }
@@ -997,6 +1011,7 @@ impl AccountsPage {
                 match result {
                     Ok(_) => {
                         page.login = None;
+                        page.login_relay = None;
                         page.load(force_usage_for(LoadTrigger::PostLogin), cx);
                     }
                     Err(err) => {
@@ -1046,6 +1061,7 @@ impl AccountsPage {
                         Some(poll) => match poll.status {
                             AgentLoginStatus::Done => {
                                 page.login = None;
+                                page.login_relay = None;
                                 page.load(force_usage_for(LoadTrigger::PostLogin), cx);
                                 cx.notify();
                                 true
@@ -1062,6 +1078,21 @@ impl AccountsPage {
                             AgentLoginStatus::Pending => {
                                 if let Some(text) = poll.message {
                                     *message = Some(text.into());
+                                }
+                                // A page learned after the start (Antigravity
+                                // prints its own once its server is up): open
+                                // it once — and on a remote engine relay its
+                                // loopback redirect, like a start reply's
+                                // (wave-10 36).
+                                if let Some(url) = poll
+                                    .url
+                                    .filter(|url| page.login_late_url.as_ref() != Some(url))
+                                {
+                                    cx.open_url(&url);
+                                    page.login_late_url = Some(url);
+                                    if let Some(port) = poll.callback_port {
+                                        page.relay_late_callback(port, cx);
+                                    }
                                 }
                                 cx.notify();
                                 false
@@ -1086,6 +1117,59 @@ impl AccountsPage {
         }));
     }
 
+    /// Wave-10 36: a loopback page that arrived with a poll on a remote
+    /// engine — listen here (once), like a start reply's port. A busy port
+    /// ends the sign-in and says why, as at the start.
+    fn relay_late_callback(&mut self, port: u16, cx: &mut Context<Self>) {
+        if self.login_relay.is_some() {
+            return;
+        }
+        let (Some(requester), Some(LoginFlow::Browser { start, .. })) =
+            (self.login_requester.clone(), &self.login)
+        else {
+            return;
+        };
+        let login_id = start.login_id.clone();
+        let Ok(engine) = crate::request_routing::device_target(
+            self.state.read(cx),
+            self.target_device.as_deref(),
+        ) else {
+            return;
+        };
+        let Some(runtime) = self
+            .state
+            .read(cx)
+            .registry()
+            .map(|registry| registry.runtime_handle())
+        else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let relay =
+                listen_for_remote_callback(&runtime, port, engine, login_id.clone(), requester)
+                    .await;
+            this.update(cx, |page, cx| {
+                let current = matches!(
+                    &page.login,
+                    Some(LoginFlow::Browser { start, .. }) if start.login_id == login_id
+                );
+                if !current {
+                    return;
+                }
+                match relay {
+                    Ok(relay) => page.login_relay = Some(relay),
+                    Err(busy) => {
+                        page.cancel_login(cx);
+                        page.error = Some(format!("Login failed: {busy}").into());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn cancel_login(&mut self, cx: &mut Context<Self>) {
         let login_id = match &self.login {
             Some(LoginFlow::PasteCode { start, .. }) | Some(LoginFlow::Browser { start, .. }) => {
@@ -1094,6 +1178,7 @@ impl AccountsPage {
             _ => None,
         };
         self.login = None;
+        self.login_relay = None;
         self.poll_task = None;
         if let (Some(login_id), Some(engine)) = (
             login_id,

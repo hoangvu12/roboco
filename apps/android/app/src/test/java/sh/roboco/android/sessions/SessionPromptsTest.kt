@@ -102,6 +102,10 @@ class SessionPromptsTest {
             calls += "unarchive($chatId)"
             result(onResult)
         }
+        override fun delete(chatId: String, onResult: (ActionOutcome) -> Unit) {
+            calls += "delete($chatId)"
+            result(onResult)
+        }
 
         override fun move(chatId: String, toSection: String?, onResult: (ActionOutcome) -> Unit) {
             calls += "move($chatId, ${toSection ?: "null"})"
@@ -456,6 +460,46 @@ class SessionPromptsTest {
         // The write is attempted (42 toasts its failure); the title update does not run.
         assertEquals(listOf("renameSection(backend, API)"), actions.calls)
         assertTrue(renamed.isEmpty())
+    }
+
+    // ---------------------------------------------- Delete session (#967)
+
+    @Test
+    fun confirmDeleteSessionShowsTheAlertAndDeletesOnDelete() {
+        var deleted = 0
+        compose.runOnUiThread { prompts.confirmDeleteSession("c1", "Fix flaky test") { deleted++ } }
+        compose.waitForIdle()
+
+        alert("alert").assertExists()
+        compose.onNodeWithText("Delete session?").assertExists()
+        compose.onNodeWithText("\u201CFix flaky test\u201D will be permanently deleted. This can\u2019t be undone.")
+            .assertExists()
+        alert("alert-cancel").assertExists()
+
+        alert("alert-primary").performClick()
+        compose.waitForIdle()
+        alert("alert").assertDoesNotExist()
+        assertEquals(listOf("delete(c1)"), actions.calls)
+        assertEquals(1, deleted)
+    }
+
+    @Test
+    fun cancellingDeleteSessionKeepsTheSessionAndARefusedDeleteStays() {
+        compose.runOnUiThread { prompts.confirmDeleteSession("c1", "Fix flaky test") { fail("must not leave") } }
+        compose.waitForIdle()
+        alert("alert-cancel").performClick()
+        compose.waitForIdle()
+        alert("alert").assertDoesNotExist()
+        assertTrue("cancel keeps the session", actions.calls.isEmpty())
+
+        actions.outcome = ActionOutcome.EngineOffline
+        compose.runOnUiThread { prompts.confirmDeleteSession("c1", "") { fail("a refused delete stays") } }
+        compose.waitForIdle()
+        compose.onNodeWithText("\u201CNew session\u201D will be permanently deleted. This can\u2019t be undone.")
+            .assertExists()
+        alert("alert-primary").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("delete(c1)"), actions.calls)
     }
 
     // ---------------------------------------------------- Delete (confirm)
