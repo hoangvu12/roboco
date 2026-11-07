@@ -103,7 +103,8 @@ mod chip_copy_tests;
 mod drop_tests;
 #[cfg(test)]
 mod fit_tests;
-#[cfg(test)]
+// Its CPU clocks are libc's (clock_gettime, getrusage), which Windows' libc lacks.
+#[cfg(all(test, unix))]
 mod slide_bench_tests;
 #[cfg(test)]
 mod editor_scroll_tests;
