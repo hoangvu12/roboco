@@ -7,6 +7,19 @@
 -- modules from its own directory down.
 
 ui.theme.strict("warn")
+-- Zeron's own themes (ds/themes/*.json), whatever theme this computer chose
+-- in Settings → Themes: the host lists the themes and the choice from the
+-- engine's data dir (src/themes.rs; a debug build's is ~/.zeron-staging),
+-- and the choice would be worn over every colour token, so the fixture
+-- looked like that theme and edits to the theme files didn't show. (Before
+-- ds.setup, whose effect asks for the slots.)
+local palettes = require("@ds/palettes")
+palettes.slots = function(own: any): any
+	return {
+		dark = if type(own) == "table" then own.dark else nil,
+		light = if type(own) == "table" then own.light else nil,
+	}
+end
 local ds = require("@ds")
 ds.setup()
 -- Addresses plain to start (hiding is the app's default): the tests read
